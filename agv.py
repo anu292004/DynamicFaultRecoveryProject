@@ -17,116 +17,218 @@ from plotly.subplots import make_subplots
 # 🔐 GOOGLE AUTH SETUP
 # ======================================
 def google_login():
-    import streamlit as st
-    from google_auth_oauthlib.flow import Flow
-    from google.oauth2 import id_token
-    from google.auth.transport import requests as google_requests # Aliased
-    import requests # 🆕 NEW: Added standard requests for Firebase
-    import pathlib
-    import urllib.parse
-    import os
 
-    # === CONFIG ===
-    client_config = dict(st.secrets["google_secrets"])
+    import streamlit as st
 
-    # Use your deployed URL for Streamlit Cloud
-    redirect_uri = st.secrets["REDIRECT_URI"]
-    # (add http://localhost:8501/ in Google Cloud for local testing)
+    from google_auth_oauthlib.flow import Flow
 
-    # === CREATE FLOW ===
-    flow = Flow.from_client_secrets_file(
-        client_secrets_file=client_secrets_file,
-        scopes=[
-            "https://www.googleapis.com/auth/userinfo.profile",
-            "https://www.googleapis.com/auth/userinfo.email",
-            "openid",
-        ],
-        redirect_uri=redirect_uri,
-    )
+    from google.oauth2 import id_token
 
-    os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
+    from google.auth.transport import requests as google_requests # Aliased
 
-    # === STEP 1: User not logged in yet ===
-    if "credentials" not in st.session_state and "code" not in st.query_params:
-        auth_url, _ = flow.authorization_url(prompt="consent", include_granted_scopes="true")
-        st.markdown(
-            f"""
-            <div style='text-align:center; margin-top:100px'>
-                <h2>🔐 Login with Google</h2>
-                <a href="{auth_url}">
-                    <button style="padding:12px 24px; border:none; border-radius:8px;
-                    background:linear-gradient(135deg,#4285F4,#34A853,#FBBC05,#EA4335);
-                    color:white; font-weight:bold;">Sign in with Google</button>
-                </a>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        st.stop()
+    import requests # 🆕 NEW: Added standard requests for Firebase
 
-    # === STEP 2: Returned from Google with ?code=... ===
-    if "code" in st.query_params and "credentials" not in st.session_state:
-        try:
-            # Build full callback URL properly
-            query_str = urllib.parse.urlencode(st.query_params)
-            full_url = f"{redirect_uri}?{query_str}"
+    import pathlib
 
-            flow.fetch_token(authorization_response=full_url)
-            credentials = flow.credentials
+    import urllib.parse
 
-            # Verify and decode ID token
-            request = google_requests.Request()
-            id_info = id_token.verify_oauth2_token(
-                credentials._id_token, request, flow.client_config["client_id"]
-            )
+    import os
 
-            # ==========================================
-            # 🆕 NEW: Tell Firebase about the login!
-            # ==========================================
-            # Replace with your actual Firebase Web API Key
-            FIREBASE_WEB_API_KEY = "AIzaSyCrcpDkftxIsBGK9BVkVghX7C0qX9iJS74" 
-            
-            firebase_auth_url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp?key={FIREBASE_WEB_API_KEY}"
-            
-            payload = {
-                "postBody": f"id_token={credentials._id_token}&providerId=google.com",
-                "requestUri": "http://localhost:8501", # Ensure this matches Firebase authorized domains
-                "returnIdpCredential": True,
-                "returnSecureToken": True
-            }
-            
-            fb_response = requests.post(firebase_auth_url, json=payload)
-            firebase_data = fb_response.json()
-            
-            if "error" in firebase_data:
-                st.error(f"❌ Firebase Auth Failed: {firebase_data['error']['message']}")
-                st.stop()
-            # ==========================================
 
-            # Save user info
-            st.session_state.credentials = id_info
-            
-            # 🆕 NEW: Save the Firebase token for future database calls
-            st.session_state.firebase_token = firebase_data.get('idToken') 
-            
-            st.query_params.clear()  # remove ?code=...
-            st.rerun()
 
-        except Exception as e:
-            st.error(f"❌ Login failed: {e}")
-            st.stop()
+    # === CONFIG ===
 
-    # === STEP 3: Return user info if logged in ===
-    return st.session_state.get("credentials")
+    client_config = dict(st.secrets["google_secrets"])
+
+
+
+    # Use your deployed URL for Streamlit Cloud
+
+    redirect_uri = st.secrets["REDIRECT_URI"]
+
+    # (add http://localhost:8501/ in Google Cloud for local testing)
+
+
+
+    # === CREATE FLOW ===
+
+    flow = Flow.from_client_secrets_file(
+
+        client_secrets_file=client_secrets_file,
+
+        scopes=[
+
+            "https://www.googleapis.com/auth/userinfo.profile",
+
+            "https://www.googleapis.com/auth/userinfo.email",
+
+            "openid",
+
+        ],
+
+        redirect_uri=redirect_uri,
+
+    )
+
+
+
+    os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
+
+
+
+    # === STEP 1: User not logged in yet ===
+
+    if "credentials" not in st.session_state and "code" not in st.query_params:
+
+        auth_url, _ = flow.authorization_url(prompt="consent", include_granted_scopes="true")
+
+        st.markdown(
+
+            f"""
+
+            <div style='text-align:center; margin-top:100px'>
+
+                <h2>🔐 Login with Google</h2>
+
+                <a href="{auth_url}">
+
+                    <button style="padding:12px 24px; border:none; border-radius:8px;
+
+                    background:linear-gradient(135deg,#4285F4,#34A853,#FBBC05,#EA4335);
+
+                    color:white; font-weight:bold;">Sign in with Google</button>
+
+                </a>
+
+            </div>
+
+            """,
+
+            unsafe_allow_html=True,
+
+        )
+
+        st.stop()
+
+
+
+    # === STEP 2: Returned from Google with ?code=... ===
+
+    if "code" in st.query_params and "credentials" not in st.session_state:
+
+        try:
+
+            # Build full callback URL properly
+
+            query_str = urllib.parse.urlencode(st.query_params)
+
+            full_url = f"{redirect_uri}?{query_str}"
+
+
+
+            flow.fetch_token(authorization_response=full_url)
+
+            credentials = flow.credentials
+
+
+
+            # Verify and decode ID token
+
+            request = google_requests.Request()
+
+            id_info = id_token.verify_oauth2_token(
+
+                credentials._id_token, request, flow.client_config["client_id"]
+
+            )
+
+
+
+            # ==========================================
+
+            # 🆕 NEW: Tell Firebase about the login!
+
+            # ==========================================
+
+            # Replace with your actual Firebase Web API Key
+
+            FIREBASE_WEB_API_KEY = "AIzaSyCrcpDkftxIsBGK9BVkVghX7C0qX9iJS74"
+
+           
+
+            firebase_auth_url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp?key={FIREBASE_WEB_API_KEY}"
+
+           
+
+            payload = {
+
+                "postBody": f"id_token={credentials._id_token}&providerId=google.com",
+
+                "requestUri": "http://localhost:8501", # Ensure this matches Firebase authorized domains
+
+                "returnIdpCredential": True,
+
+                "returnSecureToken": True
+
+            }
+
+           
+
+            fb_response = requests.post(firebase_auth_url, json=payload)
+
+            firebase_data = fb_response.json()
+
+           
+
+            if "error" in firebase_data:
+
+                st.error(f"❌ Firebase Auth Failed: {firebase_data['error']['message']}")
+
+                st.stop()
+
+            # ==========================================
+
+
+
+            # Save user info
+
+            st.session_state.credentials = id_info
+
+           
+
+            # 🆕 NEW: Save the Firebase token for future database calls
+
+            st.session_state.firebase_token = firebase_data.get('idToken')
+
+           
+
+            st.query_params.clear()  # remove ?code=...
+
+            st.rerun()
+
+
+
+        except Exception as e:
+
+            st.error(f"❌ Login failed: {e}")
+
+            st.stop()
+
+
+
+    # === STEP 3: Return user info if logged in ===
+
+    return st.session_state.get("credentials")
+
+
 
 # ======================================
+
 # 🚀 RUN LOGIN BEFORE APP LOADS
+
 # ======================================
+
 user = google_login()
-
-
-this is my google login logic
-
 if user:
     st.sidebar.image(user["picture"], width=60)
     st.sidebar.success(f"👋 Welcome, {user['name']}")
