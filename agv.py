@@ -27,10 +27,10 @@ def google_login():
     import os
 
     # === CONFIG ===
-    client_secrets_file = pathlib.Path("client_secret.json")
+    client_config = dict(st.secrets["google_secrets"])
 
     # Use your deployed URL for Streamlit Cloud
-    redirect_uri = "http://localhost:8501/"
+    redirect_uri = st.secrets["REDIRECT_URI"]
     # (add http://localhost:8501/ in Google Cloud for local testing)
 
     # === CREATE FLOW ===
