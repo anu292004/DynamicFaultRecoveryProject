@@ -38,14 +38,15 @@ def google_login():
 
     # ✅ FIXED: Build config manually in exact format Google expects
     client_config = {
-        "web": {
-            "client_id": st.secrets["google_secrets"]["client_id"],
-            "client_secret": st.secrets["google_secrets"]["client_secret"],
-            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-            "token_uri": "https://oauth2.googleapis.com/token",
-            "redirect_uris": [redirect_uri]
-        }
+    "web": {
+        "client_id": st.secrets["google_secrets"]["client_id"],
+        "client_secret": st.secrets["google_secrets"]["client_secret"],
+        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+        "token_uri": "https://oauth2.googleapis.com/token",
+        "redirect_uris": [redirect_uri],
+        "javascript_origins": [redirect_uri]
     }
+}
 
     flow = Flow.from_client_config(
         client_config=client_config,
