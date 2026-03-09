@@ -79,46 +79,30 @@ def google_login():
         st.stop()
 
     if "code" in st.query_params and "credentials" not in st.session_state:
-        try:
-            params = st.query_params.to_dict()
-            query_str = urllib.parse.urlencode(params)
-            full_url = f"{redirect_uri}?{query_str}"
+    try:
+        params = st.query_params.to_dict()
+        query_str = urllib.parse.urlencode(params)
+        full_url = f"{redirect_uri}?{query_str}"
 
-            flow.fetch_token(authorization_response=full_url)
-            credentials = flow.credentials
+        flow.fetch_token(authorization_response=full_url)
+        credentials = flow.credentials
 
-            request = google_requests.Request()
-            id_info = id_token.verify_oauth2_token(
-                credentials.id_token, request,
-                st.secrets["google_secrets"]["client_id"]
-            )
+        request = google_requests.Request()
+        id_info = id_token.verify_oauth2_token(
+            credentials.id_token, request,
+            st.secrets["google_secrets"]["client_id"]
+        )
 
-            FIREBASE_WEB_API_KEY = st.secrets.get("FIREBASE_KEY", "")
-            firebase_auth_url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp?key={FIREBASE_WEB_API_KEY}"
+        # ✅ FIREBASE COMPLETELY REMOVED - just use Google info directly
+        st.session_state.credentials = id_info
+        st.session_state.firebase_token = None  # Not needed
 
-            payload = {
-                "postBody": f"id_token={credentials.id_token}&providerId=google.com",
-                "requestUri": redirect_uri,
-                "returnIdpCredential": True,
-                "returnSecureToken": True
-            }
+        st.query_params.clear()
+        st.rerun()
 
-            fb_response = requests.post(firebase_auth_url, json=payload)
-            firebase_data = fb_response.json()
-
-            if "error" in firebase_data:
-                st.error(f"❌ Firebase Auth Failed: {firebase_data['error']['message']}")
-                st.stop()
-
-            st.session_state.credentials = id_info
-            st.session_state.firebase_token = firebase_data.get('idToken')
-
-            st.query_params.clear()
-            st.rerun()
-
-        except Exception as e:
-            st.error(f"❌ Login failed: {e}")
-            st.stop()
+    except Exception as e:
+        st.error(f"❌ Login failed: {e}")
+        st.stop()
 
     return st.session_state.get("credentials")
 
