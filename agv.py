@@ -28,12 +28,7 @@ def google_login():
     from google_auth_oauthlib.flow import Flow
     from google.oauth2 import id_token
     from google.auth.transport import requests as google_requests
-    import requests
     import urllib.parse
-    import os
-
-    # ✅ REMOVE THIS LINE - causes issues on HTTPS
-    # os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 
     redirect_uri = st.secrets["REDIRECT_URI"]
 
@@ -89,20 +84,20 @@ def google_login():
 
             request = google_requests.Request()
             id_info = id_token.verify_oauth2_token(
-            credentials.id_token, request,
-            st.secrets["google_secrets"]["client_id"]
-        )
+                credentials.id_token,
+                request,
+                st.secrets["google_secrets"]["client_id"]
+            )
 
-        # ✅ FIREBASE COMPLETELY REMOVED - just use Google info directly
-        st.session_state.credentials = id_info
-        st.session_state.firebase_token = None  # Not needed
+            st.session_state.credentials = id_info
+            st.session_state.firebase_token = None
 
-        st.query_params.clear()
-        st.rerun()
+            st.query_params.clear()
+            st.rerun()
 
-    except Exception as e:
-        st.error(f"❌ Login failed: {e}")
-        st.stop()
+        except Exception as e:
+            st.error(f"❌ Login failed: {e}")
+            st.stop()
 
     return st.session_state.get("credentials")
 
