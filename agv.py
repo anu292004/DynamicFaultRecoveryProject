@@ -20,42 +20,27 @@ def google_login():
     import streamlit as st
     from google_auth_oauthlib.flow import Flow
     from google.oauth2 import id_token
-    from google.auth.transport import requests as google_requests # Aliased
-    import requests # 🆕 NEW: Added standard requests for Firebase
-    import pathlib
+    from google.auth.transport import requests as google_requests
+    import requests
     import urllib.parse
     import os
 
-    import streamlit as st
-from google_auth_oauthlib.flow import Flow
-
-def google_login():
-    # 1. Load the TOML config from secrets
-    # Ensure this matches the [google_secrets] name in your Secrets dashboard
+    # === CONFIG ===
+    # Use the dictionary from secrets, NOT a physical file
     client_config = dict(st.secrets["google_secrets"])
     redirect_uri = st.secrets["REDIRECT_URI"]
 
-    # 2. Check if the flow is already in the session
-    if 'oauth_flow' not in st.session_state:
-        st.session_state.oauth_flow = Flow.from_client_config(
-            client_config=client_config,
-            scopes=[
-                "https://www.googleapis.com/auth/userinfo.profile",
-                "https://www.googleapis.com/auth/userinfo.email",
-                "openid",
-            ],
-            redirect_uri=redirect_uri,
-        )
-
-    # Use the persistent flow from the session
-    flow = st.session_state.oauth_flow
-    
-    authorization_url, state = flow.authorization_url(
-        access_type='offline',
-        include_granted_scopes='true'
+    # === CREATE FLOW ===
+    # CHANGED: Use from_client_config to read from Streamlit Secrets
+    flow = Flow.from_client_config(
+        client_config=client_config,
+        scopes=[
+            "https://www.googleapis.com/auth/userinfo.profile",
+            "https://www.googleapis.com/auth/userinfo.email",
+            "openid",
+        ],
+        redirect_uri=redirect_uri,
     )
-    
-    return authorization_url
 
     os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 
@@ -66,10 +51,10 @@ def google_login():
             f"""
             <div style='text-align:center; margin-top:100px'>
                 <h2>🔐 Login with Google</h2>
-                <a href="{auth_url}">
+                <a href="{auth_url}" target="_self">
                     <button style="padding:12px 24px; border:none; border-radius:8px;
                     background:linear-gradient(135deg,#4285F4,#34A853,#FBBC05,#EA4335);
-                    color:white; font-weight:bold;">Sign in with Google</button>
+                    color:white; font-weight:bold; cursor:pointer;">Sign in with Google</button>
                 </a>
             </div>
             """,
@@ -77,10 +62,10 @@ def google_login():
         )
         st.stop()
 
-    # === STEP 2: Returned from Google with ?code=... ===
+    # === STEP 2: Returned from Google ===
     if "code" in st.query_params and "credentials" not in st.session_state:
         try:
-            # Build full callback URL properly
+            # Build full callback URL
             query_str = urllib.parse.urlencode(st.query_params)
             full_url = f"{redirect_uri}?{query_str}"
 
@@ -90,20 +75,16 @@ def google_login():
             # Verify and decode ID token
             request = google_requests.Request()
             id_info = id_token.verify_oauth2_token(
-                credentials._id_token, request, flow.client_config["client_id"]
+                credentials.id_token, request, client_config["web"]["client_id"]
             )
 
-            # ==========================================
-            # 🆕 NEW: Tell Firebase about the login!
-            # ==========================================
-            # Replace with your actual Firebase Web API Key
-            FIREBASE_WEB_API_KEY = "AIzaSyCrcpDkftxIsBGK9BVkVghX7C0qX9iJS74" 
-            
+            # === FIREBASE AUTH ===
+            FIREBASE_WEB_API_KEY = st.secrets.get("FIREBASE_KEY", "YOUR_KEY_HERE") 
             firebase_auth_url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp?key={FIREBASE_WEB_API_KEY}"
             
             payload = {
-                "postBody": f"id_token={credentials._id_token}&providerId=google.com",
-                "requestUri": "http://localhost:8501", # Ensure this matches Firebase authorized domains
+                "postBody": f"id_token={credentials.id_token}&providerId=google.com",
+                "requestUri": redirect_uri, # CHANGED: Must match your actual deployed URL
                 "returnIdpCredential": True,
                 "returnSecureToken": True
             }
@@ -114,22 +95,18 @@ def google_login():
             if "error" in firebase_data:
                 st.error(f"❌ Firebase Auth Failed: {firebase_data['error']['message']}")
                 st.stop()
-            # ==========================================
 
-            # Save user info
+            # Save info to session
             st.session_state.credentials = id_info
-            
-            # 🆕 NEW: Save the Firebase token for future database calls
             st.session_state.firebase_token = firebase_data.get('idToken') 
             
-            st.query_params.clear()  # remove ?code=...
+            st.query_params.clear() 
             st.rerun()
 
         except Exception as e:
             st.error(f"❌ Login failed: {e}")
             st.stop()
 
-    # === STEP 3: Return user info if logged in ===
     return st.session_state.get("credentials")
 
 # ======================================
@@ -137,13 +114,17 @@ def google_login():
 # ======================================
 user = google_login()
 
-# Only try to show the sidebar info if 'user' actually exists
-# Only try to show the sidebar info if 'user' actually exists
-if user and "picture" in user:
+if user:
     st.sidebar.image(user["picture"], width=60)
-    st.sidebar.write(f"Logged in as: {user.get('name', 'User')}")
+    st.sidebar.success(f"👋 Welcome, {user['name']}")
+    st.sidebar.caption(user["email"])
+
+    if st.sidebar.button("🚪 Logout"):
+        for key in list(st.session_state.keys()):
+            del st.session_state[key]
+        st.experimental_rerun()
 else:
-    st.sidebar.warning("Please log in to continue.")
+    st.stop()
 
 # --- Enhanced Custom CSS for Modern UI ---
 st.markdown("""
