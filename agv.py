@@ -137,10 +137,12 @@ def google_login():
 # ======================================
 user = google_login()
 
-if user:
+# Only try to show the sidebar info if 'user' actually exists
+if user and "picture" in user:
     st.sidebar.image(user["picture"], width=60)
-    st.sidebar.success(f"👋 Welcome, {user['name']}")
-    st.sidebar.caption(user["email"])
+    st.sidebar.write(f"Logged in as: {user.get('name', 'User')}")
+else:
+    st.sidebar.warning("Please log in to continue.")
 
     if st.sidebar.button("🚪 Logout"):
         for key in list(st.session_state.keys()):
