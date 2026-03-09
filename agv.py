@@ -32,21 +32,21 @@ def google_login():
     import urllib.parse
     import os
 
-    os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
+    # ✅ REMOVE THIS LINE - causes issues on HTTPS
+    # os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 
     redirect_uri = st.secrets["REDIRECT_URI"]
 
-    # ✅ FIXED: Build config manually in exact format Google expects
     client_config = {
-    "web": {
-        "client_id": st.secrets["google_secrets"]["client_id"],
-        "client_secret": st.secrets["google_secrets"]["client_secret"],
-        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-        "token_uri": "https://oauth2.googleapis.com/token",
-        "redirect_uris": [redirect_uri],
-        "javascript_origins": [redirect_uri]
+        "web": {
+            "client_id": st.secrets["google_secrets"]["client_id"],
+            "client_secret": st.secrets["google_secrets"]["client_secret"],
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "redirect_uris": [redirect_uri],
+            "javascript_origins": [redirect_uri]
+        }
     }
-}
 
     flow = Flow.from_client_config(
         client_config=client_config,
@@ -58,12 +58,11 @@ def google_login():
         redirect_uri=redirect_uri,
     )
 
-    # === STEP 1: User not logged in yet ===
     if "credentials" not in st.session_state and "code" not in st.query_params:
         auth_url, _ = flow.authorization_url(
-    prompt="select_account consent", 
-    include_granted_scopes="true"
-)
+            prompt="select_account",
+            include_granted_scopes="true"
+        )
         st.markdown(
             f"""
             <div style='text-align:center; margin-top:100px'>
@@ -79,48 +78,42 @@ def google_login():
         )
         st.stop()
 
-    # === STEP 2: Returned from Google ===
     if "code" in st.query_params and "credentials" not in st.session_state:
         try:
-            # Manually reconstruct the full callback URL with parameters
-            # This ensures the 'state' and 'code' match what Google expects
             params = st.query_params.to_dict()
             query_str = urllib.parse.urlencode(params)
             full_url = f"{redirect_uri}?{query_str}"
 
-            # Pass the full URL to fetch_token
             flow.fetch_token(authorization_response=full_url)
             credentials = flow.credentials
 
-            # Verify and decode ID token
             request = google_requests.Request()
             id_info = id_token.verify_oauth2_token(
-                credentials.id_token, request, client_config["web"]["client_id"]
+                credentials.id_token, request,
+                st.secrets["google_secrets"]["client_id"]
             )
 
-            # === FIREBASE AUTH ===
-            FIREBASE_WEB_API_KEY = st.secrets.get("FIREBASE_KEY", "AIzaSyCrcpDkftxIsBGK9BVkVghX7C0qX9iJS74") 
+            FIREBASE_WEB_API_KEY = st.secrets.get("FIREBASE_KEY", "")
             firebase_auth_url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp?key={FIREBASE_WEB_API_KEY}"
-            
+
             payload = {
                 "postBody": f"id_token={credentials.id_token}&providerId=google.com",
-                "requestUri": redirect_uri, # CHANGED: Must match your actual deployed URL
+                "requestUri": redirect_uri,
                 "returnIdpCredential": True,
                 "returnSecureToken": True
             }
-            
+
             fb_response = requests.post(firebase_auth_url, json=payload)
             firebase_data = fb_response.json()
-            
+
             if "error" in firebase_data:
                 st.error(f"❌ Firebase Auth Failed: {firebase_data['error']['message']}")
                 st.stop()
 
-            # Save info to session
             st.session_state.credentials = id_info
-            st.session_state.firebase_token = firebase_data.get('idToken') 
-            
-            st.query_params.clear() 
+            st.session_state.firebase_token = firebase_data.get('idToken')
+
+            st.query_params.clear()
             st.rerun()
 
         except Exception as e:
@@ -128,7 +121,6 @@ def google_login():
             st.stop()
 
     return st.session_state.get("credentials")
-
 
 # ======================================
 
