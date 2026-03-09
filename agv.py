@@ -26,23 +26,36 @@ def google_login():
     import urllib.parse
     import os
 
-    # === CONFIG ===
+    import streamlit as st
+from google_auth_oauthlib.flow import Flow
+
+def google_login():
+    # 1. Load the TOML config from secrets
+    # Ensure this matches the [google_secrets] name in your Secrets dashboard
     client_config = dict(st.secrets["google_secrets"])
-
-    # Use your deployed URL for Streamlit Cloud
     redirect_uri = st.secrets["REDIRECT_URI"]
-    # (add http://localhost:8501/ in Google Cloud for local testing)
 
-    # === CREATE FLOW ===
-    flow = Flow.from_client_secrets_file(
-        client_secrets_file=client_secret.json,
-        scopes=[
-            "https://www.googleapis.com/auth/userinfo.profile",
-            "https://www.googleapis.com/auth/userinfo.email",
-            "openid",
-        ],
-        redirect_uri=redirect_uri,
+    # 2. Check if the flow is already in the session
+    if 'oauth_flow' not in st.session_state:
+        st.session_state.oauth_flow = Flow.from_client_config(
+            client_config=client_config,
+            scopes=[
+                "https://www.googleapis.com/auth/userinfo.profile",
+                "https://www.googleapis.com/auth/userinfo.email",
+                "openid",
+            ],
+            redirect_uri=redirect_uri,
+        )
+
+    # Use the persistent flow from the session
+    flow = st.session_state.oauth_flow
+    
+    authorization_url, state = flow.authorization_url(
+        access_type='offline',
+        include_granted_scopes='true'
     )
+    
+    return authorization_url
 
     os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 
