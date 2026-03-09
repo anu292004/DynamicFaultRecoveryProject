@@ -35,7 +35,7 @@ def google_login():
 
     # === CREATE FLOW ===
     flow = Flow.from_client_secrets_file(
-        client_secrets_file=client_secret,
+        client_secrets_file=client_secret.json,
         scopes=[
             "https://www.googleapis.com/auth/userinfo.profile",
             "https://www.googleapis.com/auth/userinfo.email",
