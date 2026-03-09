@@ -65,10 +65,13 @@ def google_login():
     # === STEP 2: Returned from Google ===
     if "code" in st.query_params and "credentials" not in st.session_state:
         try:
-            # Build full callback URL
-            query_str = urllib.parse.urlencode(st.query_params)
+            # Manually reconstruct the full callback URL with parameters
+            # This ensures the 'state' and 'code' match what Google expects
+            params = st.query_params.to_dict()
+            query_str = urllib.parse.urlencode(params)
             full_url = f"{redirect_uri}?{query_str}"
 
+            # Pass the full URL to fetch_token
             flow.fetch_token(authorization_response=full_url)
             credentials = flow.credentials
 
