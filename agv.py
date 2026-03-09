@@ -30,7 +30,7 @@ def google_login():
     client_config = dict(st.secrets["google_secrets"])
 
     # Use your deployed URL for Streamlit Cloud
-    redirect_uri = st.secrets["https://dynamicfaultrecoveryproject-enjmpktcswwai5yjkiv5sj.streamlit.app/"]
+    redirect_uri = st.secrets["REDIRECT_URI"]
     # (add http://localhost:8501/ in Google Cloud for local testing)
 
     # === CREATE FLOW ===
