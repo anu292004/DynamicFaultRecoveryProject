@@ -33,14 +33,20 @@ def google_login():
     import os
 
     os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
-    
-    # === CONFIG ===
-    # Use the dictionary from secrets, NOT a physical file
-    client_config = dict(st.secrets["google_secrets"])
+
     redirect_uri = st.secrets["REDIRECT_URI"]
 
-    # === CREATE FLOW ===
-    # CHANGED: Use from_client_config to read from Streamlit Secrets
+    # ✅ FIXED: Build config manually in exact format Google expects
+    client_config = {
+        "web": {
+            "client_id": st.secrets["google_secrets"]["client_id"],
+            "client_secret": st.secrets["google_secrets"]["client_secret"],
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "redirect_uris": [redirect_uri]
+        }
+    }
+
     flow = Flow.from_client_config(
         client_config=client_config,
         scopes=[
@@ -50,8 +56,6 @@ def google_login():
         ],
         redirect_uri=redirect_uri,
     )
-
-    
 
     # === STEP 1: User not logged in yet ===
     if "credentials" not in st.session_state and "code" not in st.query_params:
