@@ -79,16 +79,16 @@ def google_login():
         st.stop()
 
     if "code" in st.query_params and "credentials" not in st.session_state:
-    try:
-        params = st.query_params.to_dict()
-        query_str = urllib.parse.urlencode(params)
-        full_url = f"{redirect_uri}?{query_str}"
+        try:
+            params = st.query_params.to_dict()
+            query_str = urllib.parse.urlencode(params)
+            full_url = f"{redirect_uri}?{query_str}"
 
-        flow.fetch_token(authorization_response=full_url)
-        credentials = flow.credentials
+            flow.fetch_token(authorization_response=full_url)
+            credentials = flow.credentials
 
-        request = google_requests.Request()
-        id_info = id_token.verify_oauth2_token(
+            request = google_requests.Request()
+            id_info = id_token.verify_oauth2_token(
             credentials.id_token, request,
             st.secrets["google_secrets"]["client_id"]
         )
