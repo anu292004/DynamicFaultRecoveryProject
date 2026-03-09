@@ -13,6 +13,13 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+st.set_page_config(
+    page_title="AGV Fleet Management System",
+    page_icon="🤖",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
 # ======================================
 # 🔐 GOOGLE AUTH SETUP
 # ======================================
@@ -661,13 +668,6 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.set_page_config(
-    page_title="AGV Fleet Management System",
-    page_icon="🤖",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
 # --- AGV, Task, Warehouse Classes ---
 class AGV:
     def __init__(self, id, x, y):
@@ -979,7 +979,12 @@ with st.sidebar:
     if st.button("▶️ Manual Step", key="manual_step", help="Run one simulation step"):
         # Simulation step logic
         for agv in st.session_state.agvs:
-            agv.inducefault(st.session_state.log, st.session_state.tasks)
+            agv.inducefault(
+    st.session_state.log,
+    st.session_state.tasks,
+    st.session_state.agvs,
+    st.session_state.warehouse.taskassignmentsystem
+)
             agv.autorecover(st.session_state.log)
             completed_task = agv.move()
             if completed_task:
