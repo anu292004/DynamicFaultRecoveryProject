@@ -25,6 +25,8 @@ def google_login():
     import urllib.parse
     import os
 
+    os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
+    
     # === CONFIG ===
     # Use the dictionary from secrets, NOT a physical file
     client_config = dict(st.secrets["google_secrets"])
@@ -42,11 +44,14 @@ def google_login():
         redirect_uri=redirect_uri,
     )
 
-    os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
+    
 
     # === STEP 1: User not logged in yet ===
     if "credentials" not in st.session_state and "code" not in st.query_params:
-        auth_url, _ = flow.authorization_url(prompt="consent", include_granted_scopes="true")
+        auth_url, _ = flow.authorization_url(
+    prompt="select_account consent", 
+    include_granted_scopes="true"
+)
         st.markdown(
             f"""
             <div style='text-align:center; margin-top:100px'>
