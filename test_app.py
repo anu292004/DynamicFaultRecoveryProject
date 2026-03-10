@@ -109,7 +109,7 @@ user_email = st.session_state.get('user_email', 'User')
 
 st.sidebar.markdown(f"""
     <div style="text-align: center; margin-top: 15px; margin-bottom: 15px;">
-        <img src="https://cdn-icons-png.flaticon.com/512/8345/8345328.png" 
+        <img src="https://lh3.googleusercontent.com/gg-dl/AOI_d_9mJF_WN1d38xVPvazhB2UnLDAY6WzRqW9aC8NwmO3XtDM6VibC3BDgQhEzpRc2AQduvNZOeZoXAwFXpW-CcOB-g41LW7zR-f7WgiiM30fv99mVTSwg0mVlwiYMKHjoJot-zxezq-lQwmahis9ejs_GWybiubuWCSWvNNCxaBqlAhjB=s1024-rj" 
              style="width: 110px; height: 110px; border-radius: 50%; 
                     box-shadow: 0 8px 20px rgba(102, 126, 234, 0.25); 
                     border: 3px solid #667eea; object-fit: cover; 
