@@ -109,7 +109,7 @@ user_email = st.session_state.get('user_email', 'User')
 
 st.sidebar.markdown(f"""
     <div style="text-align: center; margin-top: 15px; margin-bottom: 15px;">
-        <img src="https://github.com/anu292004/DynamicFaultRecoveryProject/blob/c7ae56933ef2bc020ac94d6744515f6795d96365/avatar.png" 
+        <img src="https://cdn-icons-png.flaticon.com/512/8345/8345328.png" 
              style="width: 110px; height: 110px; border-radius: 50%; 
                     box-shadow: 0 8px 20px rgba(102, 126, 234, 0.25); 
                     border: 3px solid #667eea; object-fit: cover; 
