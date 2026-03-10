@@ -24,7 +24,6 @@ st.set_page_config(
 # 🔐 GOOGLE AUTH SETUP
 # ======================================
 def google_login():
-    import streamlit as st
     from google_auth_oauthlib.flow import Flow
     from google.oauth2 import id_token
     from google.auth.transport import requests as google_requests
@@ -56,7 +55,8 @@ def google_login():
     if "credentials" not in st.session_state and "code" not in st.query_params:
         auth_url, _ = flow.authorization_url(
             prompt="select_account",
-            include_granted_scopes="true"
+            access_type="offline",
+            include_granted_scopes=True
         )
         st.markdown(
             f"""
@@ -102,23 +102,33 @@ def google_login():
     return st.session_state.get("credentials")
 
 # ======================================
-
-# 🚀 RUN LOGIN BEFORE APP LOADS
-
+# 🚀 SIMPLE LOGIN (Google OAuth temporarily disabled)
 # ======================================
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
 
-user = google_login()
-if user:
-    st.sidebar.image(user["picture"], width=60)
-    st.sidebar.success(f"👋 Welcome, {user['name']}")
-    st.sidebar.caption(user["email"])
-
-    if st.sidebar.button("🚪 Logout"):
-        for key in list(st.session_state.keys()):
-            del st.session_state[key]
-        st.experimental_rerun()
-else:
+if not st.session_state.logged_in:
+    st.markdown("""
+        <div style='text-align:center; margin-top:100px'>
+            <h2>🔐 AGV Fleet Management System</h2>
+            <p>Enter password to access the dashboard</p>
+        </div>
+    """, unsafe_allow_html=True)
+    col1, col2, col3 = st.columns([1,2,1])
+    with col2:
+        password = st.text_input("Password", type="password")
+        if st.button("Login"):
+            if password == "agv2024":
+                st.session_state.logged_in = True
+                st.rerun()
+            else:
+                st.error("❌ Incorrect password")
     st.stop()
+
+st.sidebar.success("👋 Welcome!")
+if st.sidebar.button("🚪 Logout"):
+    st.session_state.logged_in = False
+    st.rerun()
 
 # --- Enhanced Custom CSS for Modern UI ---
 st.markdown("""
