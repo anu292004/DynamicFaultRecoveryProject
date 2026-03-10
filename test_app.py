@@ -32,7 +32,7 @@ def firebase_login(email, password, action="login"):
 def show_login():
     st.markdown("""
         <div style='text-align:center; margin-top:60px; margin-bottom:30px'>
-            <h1>🤖 AGV Fleet Management System</h1>
+            <h1>🤖➡️📦 AGV FLEET MANAGER</h1>
             <p style='color:#64748b;'>Sign in to access the dashboard</p>
         </div>
     """, unsafe_allow_html=True)
