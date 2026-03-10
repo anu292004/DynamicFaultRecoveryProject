@@ -23,102 +23,95 @@ st.set_page_config(
 # ======================================
 # 🔐 GOOGLE AUTH SETUP
 # ======================================
-def google_login():
-    import streamlit as st
-    from google_auth_oauthlib.flow import Flow
-    from google.oauth2 import id_token
-    from google.auth.transport import requests as google_requests
-    import urllib.parse
+def firebase_login(email, password, action="login"):
+    api_key = st.secrets["FIREBASE_KEY"]
+    if action == "signup":
+        url = f"https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={api_key}"
+    else:
+        url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={api_key}"
+    payload = {"email": email, "password": password, "returnSecureToken": True}
+    response = req.post(url, json=payload)
+    return response.json()
 
-    redirect_uri = st.secrets["REDIRECT_URI"]
+def show_login():
+    st.markdown("""
+        <div style='text-align:center; margin-top:60px; margin-bottom:30px'>
+            <h1>🤖 AGV Fleet Management System</h1>
+            <p style='color:#64748b;'>Sign in to access the dashboard</p>
+        </div>
+    """, unsafe_allow_html=True)
 
-    client_config = {
-        "web": {
-            "client_id": st.secrets["google_secrets"]["client_id"],
-            "client_secret": st.secrets["google_secrets"]["client_secret"],
-            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-            "token_uri": "https://oauth2.googleapis.com/token",
-            "redirect_uris": [redirect_uri],
-            "javascript_origins": [redirect_uri]
-        }
-    }
+    col1, col2, col3 = st.columns([1, 1.5, 1])
+    with col2:
+        tab_login, tab_signup = st.tabs(["🔑 Login", "📝 Sign Up"])
 
-    flow = Flow.from_client_config(
-        client_config=client_config,
-        scopes=[
-            "https://www.googleapis.com/auth/userinfo.profile",
-            "https://www.googleapis.com/auth/userinfo.email",
-            "openid",
-        ],
-        redirect_uri=redirect_uri,
-    )
+        with tab_login:
+            email = st.text_input("Email", key="login_email", placeholder="your@email.com")
+            password = st.text_input("Password", type="password", key="login_password", placeholder="••••••••")
+            if st.button("Login", key="login_btn", use_container_width=True):
+                if email and password:
+                    with st.spinner("Signing in..."):
+                        result = firebase_login(email, password, "login")
+                    if "idToken" in result:
+                        st.session_state.user_email = result["email"]
+                        st.session_state.user_token = result["idToken"]
+                        st.session_state.logged_in = True
+                        st.rerun()
+                    else:
+                        error_msg = result.get("error", {}).get("message", "Login failed")
+                        if "EMAIL_NOT_FOUND" in error_msg or "INVALID_LOGIN_CREDENTIALS" in error_msg:
+                            st.error("❌ Invalid email or password")
+                        elif "INVALID_EMAIL" in error_msg:
+                            st.error("❌ Invalid email format")
+                        else:
+                            st.error(f"❌ {error_msg}")
+                else:
+                    st.warning("⚠️ Please enter email and password")
 
-    if "credentials" not in st.session_state and "code" not in st.query_params:
-        auth_url, _ = flow.authorization_url(
-            prompt="select_account",
-            include_granted_scopes="true"
-        )
-        st.markdown(
-            f"""
-            <div style='text-align:center; margin-top:100px'>
-                <h2>🔐 Login with Google</h2>
-                <a href="{auth_url}" target="_self">
-                    <button style="padding:12px 24px; border:none; border-radius:8px;
-                    background:linear-gradient(135deg,#4285F4,#34A853,#FBBC05,#EA4335);
-                    color:white; font-weight:bold; cursor:pointer;">Sign in with Google</button>
-                </a>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        st.stop()
-
-    if "code" in st.query_params and "credentials" not in st.session_state:
-        try:
-            params = st.query_params.to_dict()
-            query_str = urllib.parse.urlencode(params)
-            full_url = f"{redirect_uri}?{query_str}"
-
-            flow.fetch_token(authorization_response=full_url)
-            credentials = flow.credentials
-
-            request = google_requests.Request()
-            id_info = id_token.verify_oauth2_token(
-                credentials.id_token,
-                request,
-                st.secrets["google_secrets"]["client_id"]
-            )
-
-            st.session_state.credentials = id_info
-            st.session_state.firebase_token = None
-
-            st.query_params.clear()
-            st.rerun()
-
-        except Exception as e:
-            st.error(f"❌ Login failed: {e}")
-            st.stop()
-
-    return st.session_state.get("credentials")
-
-# ======================================
-
-# 🚀 RUN LOGIN BEFORE APP LOADS
-
-# ======================================
-
-user = google_login()
-if user:
-    st.sidebar.image(user["picture"], width=60)
-    st.sidebar.success(f"👋 Welcome, {user['name']}")
-    st.sidebar.caption(user["email"])
-
-    if st.sidebar.button("🚪 Logout"):
-        for key in list(st.session_state.keys()):
-            del st.session_state[key]
-        st.experimental_rerun()
-else:
+        with tab_signup:
+            new_email = st.text_input("Email", key="signup_email", placeholder="your@email.com")
+            new_password = st.text_input("Password", type="password", key="signup_password", placeholder="Min 6 characters")
+            confirm_password = st.text_input("Confirm Password", type="password", key="confirm_password")
+            if st.button("Create Account", key="signup_btn", use_container_width=True):
+                if new_email and new_password and confirm_password:
+                    if new_password != confirm_password:
+                        st.error("❌ Passwords do not match")
+                    elif len(new_password) < 6:
+                        st.error("❌ Password must be at least 6 characters")
+                    else:
+                        with st.spinner("Creating account..."):
+                            result = firebase_login(new_email, new_password, "signup")
+                        if "idToken" in result:
+                            st.session_state.user_email = result["email"]
+                            st.session_state.user_token = result["idToken"]
+                            st.session_state.logged_in = True
+                            st.rerun()
+                        else:
+                            error_msg = result.get("error", {}).get("message", "Signup failed")
+                            if "EMAIL_EXISTS" in error_msg:
+                                st.error("❌ Email already registered. Please login.")
+                            elif "WEAK_PASSWORD" in error_msg:
+                                st.error("❌ Password too weak. Use at least 6 characters.")
+                            else:
+                                st.error(f"❌ {error_msg}")
+                else:
+                    st.warning("⚠️ Please fill all fields")
     st.stop()
+
+# ======================================
+# 🚀 RUN LOGIN BEFORE APP LOADS
+# ======================================
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+
+if not st.session_state.logged_in:
+    show_login()
+
+st.sidebar.success(f"👋 {st.session_state.get('user_email', 'User')}")
+if st.sidebar.button("🚪 Logout"):
+    for key in list(st.session_state.keys()):
+        del st.session_state[key]
+    st.rerun()
 
 # --- Enhanced Custom CSS for Modern UI ---
 st.markdown("""
