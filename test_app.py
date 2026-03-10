@@ -103,33 +103,6 @@ if "logged_in" not in st.session_state:
 if not st.session_state.logged_in:
     show_login()
 
-
-# --- 3D Cartoon Avatar Display ---
-user_email = st.session_state.get('user_email', 'User')
-
-st.sidebar.markdown(f"""
-    <div style="text-align: center; margin-top: 15px; margin-bottom: 15px;">
-        <img src="https://cdn-icons-png.flaticon.com/512/8345/8345328.png" 
-             style="width: 110px; height: 110px; border-radius: 50%; 
-                    box-shadow: 0 8px 20px rgba(102, 126, 234, 0.25); 
-                    border: 3px solid #667eea; object-fit: cover; 
-                    background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
-                    transition: transform 0.3s ease;">
-    </div>
-""", unsafe_allow_html=True)
-
-st.sidebar.success(f"👋 {user_email}")
-
-if st.sidebar.button("🚪 Logout", use_container_width=True):
-    for key in list(st.session_state.keys()):
-        del st.session_state[key]
-    st.rerun()
-# st.sidebar.success(f"👋 {st.session_state.get('user_email', 'User')}")
-# if st.sidebar.button("🚪 Logout"):
-#     for key in list(st.session_state.keys()):
-#         del st.session_state[key]
-#     st.rerun()
-
 # --- Enhanced Custom CSS ---
 st.markdown("""
     <style>
@@ -299,7 +272,6 @@ class AGV:
         score -= min(30, self.operatinghours * 0.01)
         return max(0, score)
 
-
 class Task:
     def __init__(self, id, x, y, priority=1, deadline=None):
         self.id = id
@@ -311,7 +283,6 @@ class Task:
         self.reassignmentcount = 0
         self.completed = False
         self.createdtime = time.time()
-
 
 class TaskAssignmentSystem:
     def trigger_immediate_takeover(self, failed_agv, fleet, log):
@@ -358,7 +329,6 @@ class TaskAssignmentSystem:
                 log.append(f"🔄 Task T-{agv.task.id} recovered by AGV-{agv.id:03d}")
         return recovered
 
-
 class WarehouseSystem:
     def __init__(self):
         self.taskassignmentsystem = TaskAssignmentSystem()
@@ -380,7 +350,6 @@ class WarehouseSystem:
             'reassignmentrate': reassignment_rate, 'efficiency': efficiency,
             'networkhealth': network_health, 'pendingtasks': pending_tasks
         }
-
 
 # --- System Initialization ---
 GRIDSIZE = 25
@@ -409,6 +378,28 @@ st.markdown("""
 
 # --- Sidebar Controls ---
 with st.sidebar:
+    # 1. 3D Cartoon Avatar Display
+    user_email = st.session_state.get('user_email', 'User')
+    
+    st.markdown(f"""
+        <div style="text-align: center; margin-top: 15px; margin-bottom: 15px;">
+            <img src="https://cdn-icons-png.flaticon.com/512/8345/8345328.png" 
+                 style="width: 110px; height: 110px; border-radius: 50%; 
+                        box-shadow: 0 8px 20px rgba(102, 126, 234, 0.25); 
+                        border: 3px solid #667eea; object-fit: cover; 
+                        background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
+                        transition: transform 0.3s ease;">
+        </div>
+    """, unsafe_allow_html=True)
+    
+    st.success(f"👋 {user_email}")
+    
+    if st.button("🚪 Logout", use_container_width=True):
+        for key in list(st.session_state.keys()):
+            del st.session_state[key]
+        st.rerun()
+
+    # 2. System Controls
     st.markdown("<div class='control-section'>", unsafe_allow_html=True)
     st.markdown("### 🎛️ System Controls")
 
@@ -440,6 +431,7 @@ with st.sidebar:
 
     st.markdown("</div>", unsafe_allow_html=True)
 
+    # 3. Simulation Controls
     st.markdown("<div class='control-section'>", unsafe_allow_html=True)
     st.markdown("### ⚙️ Simulation")
     st.session_state.autorun = st.toggle("🔄 Auto Simulation", value=st.session_state.autorun)
@@ -468,6 +460,7 @@ with st.sidebar:
 
     st.markdown("</div>", unsafe_allow_html=True)
 
+    # 4. Quick Status Metrics
     st.markdown("<div class='control-section'>", unsafe_allow_html=True)
     st.markdown("### 📊 Quick Status")
     if st.session_state.kpihistory:
