@@ -11,7 +11,7 @@ from plotly.subplots import make_subplots
 
 st.set_page_config(
     page_title="AGV Fleet Manager",
-    page_icon="🤖➡️📦",
+    page_icon="🤖",
     layout="wide",
     initial_sidebar_state="expanded"
 )
