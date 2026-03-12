@@ -1,9 +1,11 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import requests as req
 import random
 import pandas as pd
 import numpy as np
 import time
+import json
 from datetime import datetime
 import plotly.express as px
 import plotly.graph_objects as go
@@ -103,7 +105,7 @@ if "logged_in" not in st.session_state:
 if not st.session_state.logged_in:
     show_login()
 
-# --- Enhanced Custom CSS ---
+# --- CSS ---
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
@@ -150,18 +152,10 @@ st.markdown("""
         background: white; border-radius: 16px; padding: 20px; margin: 15px 0;
         box-shadow: 0 4px 15px rgba(0,0,0,0.05); border: 1px solid #e2e8f0;
     }
-    .map-container {
-        background: white; border-radius: 20px; padding: 20px;
-        box-shadow: 0 8px 30px rgba(0,0,0,0.08); border: 1px solid #e2e8f0;
-    }
     div[data-testid="metric-container"] {
         background: linear-gradient(145deg, #ffffff 0%, #f8fafc 100%);
         border: 1px solid #e2e8f0; padding: 1rem; border-radius: 16px;
         box-shadow: 0 4px 15px rgba(0,0,0,0.05);
-    }
-    .dataframe-container {
-        background: white; border-radius: 16px; overflow: hidden;
-        box-shadow: 0 4px 20px rgba(0,0,0,0.08); border: 1px solid #e2e8f0;
     }
     .log-container {
         background: #1e293b; color: #e2e8f0; padding: 20px; border-radius: 12px;
@@ -192,8 +186,589 @@ st.markdown("""
         background: linear-gradient(180deg, #f8fafc 0%, #ffffff 100%);
         border-right: 1px solid #e2e8f0;
     }
+    /* Remove iframe border */
+    iframe { border: none !important; border-radius: 16px; }
     </style>
 """, unsafe_allow_html=True)
+
+
+# ======================================
+# 📡 LIVE MAP HTML GENERATOR
+# ======================================
+def build_live_map_html(agv_state: list, task_state: list, grid_size: int = 25) -> str:
+    """
+    Build the live map HTML, seeding it with the current Streamlit fleet state.
+    The map runs its own simulation loop after that — fully independent at 60fps.
+    """
+    agv_json = json.dumps(agv_state)
+    task_json = json.dumps(task_state)
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@400;500;600;700&display=swap');
+  *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
+  :root {{
+    --bg: #020c18; --grid: #0a1f35; --accent: #00d4ff;
+    --green: #00ff9d; --orange: #ff7b00; --red: #ff2d55;
+    --yellow: #ffd700; --text: #7ec8e3; --dim: #1a3a52;
+  }}
+  html, body {{ width:100%; height:100%; overflow:hidden; background:var(--bg); color:var(--text); font-family:'Rajdhani',sans-serif; }}
+  #wrap {{ display:flex; flex-direction:column; height:100vh; }}
+  header {{
+    display:flex; align-items:center; justify-content:space-between;
+    padding:8px 16px; border-bottom:1px solid var(--dim);
+    background:rgba(0,15,30,0.95); flex-shrink:0;
+  }}
+  .brand {{ font-family:'Share Tech Mono',monospace; font-size:15px; color:var(--accent); letter-spacing:3px; }}
+  .brand span {{ color:var(--green); }}
+  .hstats {{ display:flex; gap:18px; }}
+  .stat {{ text-align:center; }}
+  .sv {{ font-size:20px; font-weight:700; color:var(--accent); font-family:'Share Tech Mono',monospace; line-height:1; }}
+  .sv.red {{ color:var(--red); }} .sv.green {{ color:var(--green); }} .sv.orange {{ color:var(--orange); }}
+  .sl {{ font-size:9px; letter-spacing:2px; text-transform:uppercase; color:#3a6a8a; margin-top:1px; }}
+  .ctrls {{ display:flex; gap:8px; align-items:center; }}
+  button {{
+    background:transparent; border:1px solid var(--accent); color:var(--accent);
+    padding:5px 12px; font-family:'Rajdhani',sans-serif; font-size:12px; font-weight:600;
+    letter-spacing:1px; cursor:pointer; transition:all 0.2s; text-transform:uppercase; border-radius:3px;
+  }}
+  button:hover {{ background:var(--accent); color:var(--bg); }}
+  button.active {{ background:var(--accent); color:var(--bg); }}
+  button.danger {{ border-color:var(--red); color:var(--red); }}
+  button.danger:hover {{ background:var(--red); color:#fff; }}
+  .spctl {{ display:flex; align-items:center; gap:6px; font-size:11px; }}
+  input[type=range] {{
+    -webkit-appearance:none; height:3px; background:var(--dim);
+    border-radius:2px; outline:none; width:70px;
+  }}
+  input[type=range]::-webkit-slider-thumb {{
+    -webkit-appearance:none; width:11px; height:11px;
+    background:var(--accent); border-radius:50%; cursor:pointer;
+  }}
+  #sp-lbl {{ font-family:'Share Tech Mono',monospace; color:var(--accent); font-size:12px; width:28px; }}
+  .main {{ display:flex; flex:1; overflow:hidden; }}
+  #cvwrap {{ flex:1; position:relative; overflow:hidden; }}
+  canvas {{ display:block; width:100%; height:100%; }}
+  .sidebar {{
+    width:230px; flex-shrink:0; background:rgba(0,10,22,0.97);
+    border-left:1px solid var(--dim); display:flex; flex-direction:column; overflow:hidden;
+  }}
+  .ssec {{ padding:10px 12px; border-bottom:1px solid var(--dim); }}
+  .stitle {{ font-size:9px; letter-spacing:3px; text-transform:uppercase; color:#3a6a8a; margin-bottom:8px; }}
+  .alist {{ flex:1; overflow-y:auto; padding:6px; }}
+  .alist::-webkit-scrollbar {{ width:3px; }}
+  .alist::-webkit-scrollbar-thumb {{ background:var(--dim); border-radius:2px; }}
+  .acard {{
+    background:rgba(0,20,40,0.8); border:1px solid var(--dim);
+    border-radius:3px; padding:8px; margin-bottom:5px; transition:border-color 0.3s;
+  }}
+  .acard.working {{ border-color:rgba(0,212,255,0.4); }}
+  .acard.failed {{ border-color:rgba(255,45,85,0.6); background:rgba(40,5,15,0.8); }}
+  .acard.intercepting {{ border-color:rgba(255,123,0,0.6); background:rgba(30,15,0,0.8); }}
+  .acard.charging {{ border-color:rgba(255,215,0,0.4); }}
+  .arow {{ display:flex; justify-content:space-between; align-items:center; margin-bottom:4px; }}
+  .aid {{ font-family:'Share Tech Mono',monospace; font-size:12px; color:var(--accent); }}
+  .sdot {{ width:7px;height:7px;border-radius:50%;display:inline-block;margin-right:4px; }}
+  .bbar {{ height:3px; background:var(--dim); border-radius:2px; overflow:hidden; margin-top:3px; }}
+  .bfill {{ height:100%; border-radius:2px; transition:width 0.5s; }}
+  .ainfo {{ font-size:10px; color:#3a6a8a; margin-top:2px; }}
+  .ainfo.hl {{ color:var(--orange); font-weight:600; }}
+  .logp {{
+    height:140px; overflow-y:auto; font-family:'Share Tech Mono',monospace;
+    font-size:9px; padding:6px; background:rgba(0,5,12,0.9); flex-shrink:0;
+  }}
+  .logp::-webkit-scrollbar {{ width:2px; }}
+  .logp::-webkit-scrollbar-thumb {{ background:var(--dim); }}
+  .le {{ padding:1px 0; border-bottom:1px solid rgba(26,58,82,0.3); line-height:1.4; }}
+  .le.fault {{ color:var(--red); }} .le.takeover {{ color:var(--orange); }}
+  .le.complete {{ color:var(--green); }} .le.assign {{ color:var(--accent); }}
+  .le.recover {{ color:#9b59b6; }}
+  .legend {{ display:flex; flex-wrap:wrap; gap:6px; }}
+  .li {{ display:flex; align-items:center; gap:4px; font-size:10px; color:#5a8aa5; }}
+  .ld {{ width:9px;height:9px;border-radius:50%; }}
+  .ls {{ width:9px;height:9px;border-radius:2px; }}
+  .tt {{
+    position:absolute; background:rgba(0,10,22,0.97); border:1px solid var(--accent);
+    color:var(--text); padding:7px 10px; font-size:11px; pointer-events:none;
+    border-radius:3px; display:none; white-space:nowrap; z-index:100;
+    font-family:'Share Tech Mono',monospace;
+  }}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <header>
+    <div class="brand">AGV <span>LIVE</span> MAP</div>
+    <div class="hstats">
+      <div class="stat"><div class="sv green" id="s-active">0</div><div class="sl">Active</div></div>
+      <div class="stat"><div class="sv red" id="s-failed">0</div><div class="sl">Failed</div></div>
+      <div class="stat"><div class="sv orange" id="s-intercept">0</div><div class="sl">Intercept</div></div>
+      <div class="stat"><div class="sv" id="s-tasks">0</div><div class="sl">Tasks</div></div>
+      <div class="stat"><div class="sv green" id="s-done">0</div><div class="sl">Done</div></div>
+    </div>
+    <div class="ctrls">
+      <div class="spctl">
+        <span style="font-size:10px;color:#3a6a8a;letter-spacing:1px;">SPEED</span>
+        <input type="range" id="spd" min="0.5" max="5" step="0.5" value="2">
+        <span id="sp-lbl">2x</span>
+      </div>
+      <button id="btn-pause" class="active">⏸ PAUSE</button>
+      <button id="btn-fault" class="danger">⚡ FAULT</button>
+      <button id="btn-reset">↺ RESET</button>
+    </div>
+  </header>
+  <div class="main">
+    <div id="cvwrap">
+      <canvas id="map"></canvas>
+      <div class="tt" id="tt"></div>
+    </div>
+    <div class="sidebar">
+      <div class="ssec">
+        <div class="stitle">Fleet Status</div>
+        <div class="alist" id="alist" style="max-height:300px;"></div>
+      </div>
+      <div class="ssec">
+        <div class="stitle">Legend</div>
+        <div class="legend">
+          <div class="li"><div class="ld" style="background:#00ff9d"></div>Idle</div>
+          <div class="li"><div class="ld" style="background:#00d4ff"></div>Working</div>
+          <div class="li"><div class="ld" style="background:#ff7b00"></div>Intercept</div>
+          <div class="li"><div class="ld" style="background:#ff2d55"></div>Failed</div>
+          <div class="li"><div class="ld" style="background:#ffd700"></div>Low Batt</div>
+          <div class="li"><div class="ls" style="background:#00ff9d"></div>P1 Task</div>
+          <div class="li"><div class="ls" style="background:#ffd700"></div>P2 Task</div>
+          <div class="li"><div class="ls" style="background:#ff2d55"></div>P3 Task</div>
+        </div>
+      </div>
+      <div class="ssec"><div class="stitle">Event Log</div></div>
+      <div class="logp" id="logp"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── Bootstrap from Streamlit state ──────────────────────────────
+const INIT_AGVS  = {agv_json};
+const INIT_TASKS = {task_json};
+const GRID = {grid_size};
+const NUM_AGVS  = INIT_AGVS.length  || 10;
+const NUM_TASKS = INIT_TASKS.length || 18;
+
+const canvas = document.getElementById('map');
+const ctx = canvas.getContext('2d');
+let running = true, speed = 2;
+let completedCount = 0, stepAccum = 0, lastTime = 0;
+const STEP_MS = 500;
+let taskIdCounter = NUM_TASKS + 1000;
+let logs = [];
+
+// ── Build internal AGV objects from Streamlit state ──────────────
+function makeAGVFromState(s) {{
+  return {{
+    id: s.id,
+    x: typeof s.x === 'number' ? s.x : Math.random() * GRID,
+    y: typeof s.y === 'number' ? s.y : Math.random() * GRID,
+    battery: typeof s.batterylevel === 'number' ? s.batterylevel : 80,
+    failed: !!s.failed,
+    faultType: s.faulttype || null,
+    task: null, lostTask: null, intercept: null,
+    pathTrail: [], flashTimer: 0, recoveryTimer: 0, tasksDone: s.taskcompletioncount || 0
+  }};
+}}
+
+function makeAGV(id) {{
+  return {{ id, x: Math.random()*GRID, y: Math.random()*GRID, battery:70+Math.random()*30,
+    failed:false, faultType:null, task:null, lostTask:null, intercept:null,
+    pathTrail:[], flashTimer:0, recoveryTimer:0, tasksDone:0 }};
+}}
+
+function makeTaskFromState(s) {{
+  return {{
+    id: s.id,
+    x: typeof s.x === 'number' ? s.x : Math.random() * GRID,
+    y: typeof s.y === 'number' ? s.y : Math.random() * GRID,
+    priority: s.priority || 1,
+    assignedTo: null, completed: false, age: 0, sparkle: 0
+  }};
+}}
+
+function makeTask(id) {{
+  return {{ id, x:Math.random()*GRID, y:Math.random()*GRID,
+    priority:[1,1,2,2,3][Math.floor(Math.random()*5)],
+    assignedTo:null, completed:false, age:0, sparkle:0 }};
+}}
+
+// Seed from Streamlit state
+let agvs  = INIT_AGVS.length  ? INIT_AGVS.map(makeAGVFromState)   : Array.from({{length:NUM_AGVS}},(_,i)=>makeAGV(i));
+let tasks = INIT_TASKS.length ? INIT_TASKS.map(makeTaskFromState)  : Array.from({{length:NUM_TASKS}},(_,i)=>makeTask(i));
+
+function dist(a,b) {{ return Math.sqrt((a.x-b.x)**2+(a.y-b.y)**2); }}
+
+function addLog(msg, type='assign') {{
+  const ts = new Date().toLocaleTimeString('en',{{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'}});
+  logs.unshift({{msg,type,ts}});
+  if(logs.length>80) logs.pop();
+  renderLog();
+}}
+
+// ── Simulation ───────────────────────────────────────────────────
+function assignTasks() {{
+  const unassigned = tasks.filter(t=>!t.assignedTo && !t.completed);
+  const idle = agvs.filter(a=>!a.failed && !a.task);
+  unassigned.sort((a,b)=>a.priority-b.priority);
+  for(const task of unassigned) {{
+    if(!idle.length) break;
+    const best = idle.reduce((b,a)=>dist(a,task)<dist(b,task)?a:b);
+    task.assignedTo=best.id; best.task=task;
+    idle.splice(idle.indexOf(best),1);
+    addLog(`T-${{task.id}} → AGV-${{String(best.id).padStart(3,'0')}}`,'assign');
+  }}
+}}
+
+function triggerFault(agv) {{
+  if(agv.failed) return;
+  agv.failed=true;
+  agv.faultType=['LiDAR Error','Motor Jam','Battery Crit','Comm Loss'][Math.floor(Math.random()*4)];
+  agv.flashTimer=60;
+  if(agv.task) {{
+    agv.lostTask=agv.task; agv.task.assignedTo=null; agv.task=null;
+    addLog(`🚨 AGV-${{String(agv.id).padStart(3,'0')}} FAULT: ${{agv.faultType}}`,'fault');
+    triggerTakeover(agv);
+  }} else {{
+    addLog(`🚨 AGV-${{String(agv.id).padStart(3,'0')}} FAULT: ${{agv.faultType}}`,'fault');
+  }}
+  agv.recoveryTimer=180+Math.random()*120;
+}}
+
+function triggerTakeover(failedAGV) {{
+  if(!failedAGV.lostTask) return;
+  const candidates=agvs.filter(a=>!a.failed&&!a.task&&a.id!==failedAGV.id);
+  if(!candidates.length) {{
+    addLog(`⚠️ No idle AGV for takeover of T-${{failedAGV.lostTask.id}}`,'fault'); return;
+  }}
+  const best=candidates.reduce((b,a)=>dist(a,failedAGV.lostTask)<dist(b,failedAGV.lostTask)?a:b);
+  const t=failedAGV.lostTask;
+  t.assignedTo=best.id; best.task=t;
+  best.intercept=`Takeover T-${{t.id}} from AGV-${{failedAGV.id}}`;
+  failedAGV.lostTask=null;
+  addLog(`⚡ TAKEOVER: AGV-${{String(best.id).padStart(3,'0')}} picks up T-${{t.id}}`,'takeover');
+}}
+
+function stepSim() {{
+  for(const agv of agvs) {{
+    if(!agv.failed && Math.random()<0.015) triggerFault(agv);
+  }}
+  for(const agv of agvs) {{
+    if(agv.failed) {{
+      agv.recoveryTimer--;
+      if(agv.recoveryTimer<=0) {{
+        agv.failed=false; agv.faultType=null; agv.intercept=null;
+        addLog(`✅ AGV-${{String(agv.id).padStart(3,'0')}} recovered`,'recover');
+      }}
+    }}
+  }}
+  for(const agv of agvs) {{
+    if(agv.failed||!agv.task) continue;
+    const t=agv.task;
+    const dx=t.x-agv.x, dy=t.y-agv.y;
+    const d=Math.sqrt(dx*dx+dy*dy);
+    const step=0.35*speed;
+    if(d<step) {{
+      agv.x=t.x; agv.y=t.y; t.completed=true; completedCount++;
+      agv.task=null; agv.intercept=null; agv.tasksDone++;
+      t.sparkle=30;
+      addLog(`✅ T-${{t.id}} done by AGV-${{String(agv.id).padStart(3,'0')}}`,'complete');
+    }} else {{
+      agv.x+=dx/d*step; agv.y+=dy/d*step;
+    }}
+    agv.battery-=0.03*speed; if(agv.battery<0) agv.battery=0;
+    agv.pathTrail.push({{x:agv.x,y:agv.y}});
+    if(agv.pathTrail.length>40) agv.pathTrail.shift();
+  }}
+  for(const agv of agvs) {{
+    if(!agv.task&&!agv.failed&&agv.battery<100) agv.battery=Math.min(100,agv.battery+0.2*speed);
+  }}
+  assignTasks();
+  tasks=tasks.filter(t=>!t.completed);
+  while(tasks.length<NUM_TASKS) {{
+    const nt=makeTask(taskIdCounter++);
+    tasks.push(nt); nt.sparkle=20;
+    addLog(`🆕 T-${{nt.id}} spawned`,'assign');
+  }}
+}}
+
+// ── Canvas rendering ─────────────────────────────────────────────
+let cw,ch,cellW,cellH,padX,padY;
+
+function resize() {{
+  const wrap=document.getElementById('cvwrap');
+  cw=canvas.width=wrap.clientWidth;
+  ch=canvas.height=wrap.clientHeight;
+  const sz=Math.min(cw,ch)*0.92;
+  cellW=sz/GRID; cellH=sz/GRID;
+  padX=(cw-sz)/2; padY=(ch-sz)/2;
+}}
+
+function gx(v) {{ return padX+v*cellW; }}
+function gy(v) {{ return padY+v*cellH; }}
+
+function drawGrid() {{
+  ctx.strokeStyle='rgba(10,31,53,0.8)'; ctx.lineWidth=0.5;
+  for(let i=0;i<=GRID;i++) {{
+    ctx.beginPath(); ctx.moveTo(gx(i),gy(0)); ctx.lineTo(gx(i),gy(GRID)); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(gx(0),gy(i)); ctx.lineTo(gx(GRID),gy(i)); ctx.stroke();
+  }}
+  ctx.strokeStyle='rgba(0,212,255,0.04)'; ctx.lineWidth=0.4;
+  for(let i=5;i<GRID;i+=5) {{
+    ctx.beginPath(); ctx.moveTo(gx(i),gy(0)); ctx.lineTo(gx(i),gy(GRID)); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(gx(0),gy(i)); ctx.lineTo(gx(GRID),gy(i)); ctx.stroke();
+  }}
+}}
+
+function drawTasks() {{
+  for(const t of tasks) {{
+    const px=gx(t.x), py=gy(t.y);
+    const col={{1:'#00ff9d',2:'#ffd700',3:'#ff2d55'}}[t.priority];
+    t.age++;
+    if(t.sparkle>0) {{
+      t.sparkle--;
+      ctx.strokeStyle=col; ctx.globalAlpha=t.sparkle/20; ctx.lineWidth=2;
+      ctx.beginPath(); ctx.arc(px,py,(20-t.sparkle/20*20)+5,0,Math.PI*2); ctx.stroke();
+      ctx.globalAlpha=1;
+    }}
+    const pulse=0.5+0.5*Math.sin(Date.now()*0.003+t.id);
+    ctx.shadowBlur=8+pulse*6; ctx.shadowColor=col;
+    ctx.fillStyle=col; ctx.globalAlpha=0.15+pulse*0.05;
+    const s=cellW*0.55;
+    ctx.fillRect(px-s/2,py-s/2,s,s); ctx.globalAlpha=1; ctx.shadowBlur=0;
+    ctx.strokeStyle=col; ctx.lineWidth=1.5; ctx.globalAlpha=0.8;
+    ctx.strokeRect(px-s/2,py-s/2,s,s); ctx.globalAlpha=1;
+    ctx.fillStyle=col; ctx.font=`bold ${{cellW*0.35}}px Rajdhani`;
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText(`P${{t.priority}}`,px,py);
+    ctx.fillStyle='rgba(255,255,255,0.3)'; ctx.font=`${{cellW*0.2}}px Share Tech Mono`;
+    ctx.fillText(`T${{t.id}}`,px,py+s/2+8);
+  }}
+}}
+
+function drawTrails() {{
+  for(const agv of agvs) {{
+    if(agv.failed||agv.pathTrail.length<2) continue;
+    const col=agv.intercept?'#ff7b00':'#00d4ff';
+    for(let i=1;i<agv.pathTrail.length;i++) {{
+      const alpha=(i/agv.pathTrail.length)*0.4;
+      ctx.strokeStyle=col; ctx.globalAlpha=alpha; ctx.lineWidth=1.5;
+      ctx.beginPath();
+      ctx.moveTo(gx(agv.pathTrail[i-1].x),gy(agv.pathTrail[i-1].y));
+      ctx.lineTo(gx(agv.pathTrail[i].x),gy(agv.pathTrail[i].y));
+      ctx.stroke();
+    }}
+    ctx.globalAlpha=1;
+  }}
+}}
+
+function drawLines() {{
+  for(const agv of agvs) {{
+    if(!agv.task||agv.failed) continue;
+    const ax=gx(agv.x),ay=gy(agv.y),bx=gx(agv.task.x),by=gy(agv.task.y);
+    const col=agv.intercept?'#ff7b00':'rgba(0,212,255,0.25)';
+    ctx.strokeStyle=col; ctx.setLineDash([4,6]);
+    ctx.lineWidth=agv.intercept?1.5:1; ctx.globalAlpha=agv.intercept?0.8:0.5;
+    ctx.beginPath(); ctx.moveTo(ax,ay); ctx.lineTo(bx,by); ctx.stroke();
+    ctx.setLineDash([]); ctx.globalAlpha=1;
+    const angle=Math.atan2(by-ay,bx-ax);
+    const mid={{x:(ax+bx)/2,y:(ay+by)/2}};
+    ctx.fillStyle=col; ctx.globalAlpha=0.7;
+    ctx.save(); ctx.translate(mid.x,mid.y); ctx.rotate(angle);
+    ctx.beginPath(); ctx.moveTo(5,0); ctx.lineTo(-4,4); ctx.lineTo(-4,-4);
+    ctx.closePath(); ctx.fill(); ctx.restore(); ctx.globalAlpha=1;
+  }}
+}}
+
+function drawAGVs() {{
+  const R=cellW*0.55;
+  for(const agv of agvs) {{
+    const px=gx(agv.x), py=gy(agv.y);
+    if(agv.flashTimer>0) agv.flashTimer--;
+    let col,ringCol;
+    if(agv.failed)          {{ col='#ff2d55'; ringCol='rgba(255,45,85,0.3)'; }}
+    else if(agv.intercept)  {{ col='#ff7b00'; ringCol='rgba(255,123,0,0.3)'; }}
+    else if(agv.task)       {{ col='#00d4ff'; ringCol='rgba(0,212,255,0.2)'; }}
+    else if(agv.battery<30) {{ col='#ffd700'; ringCol='rgba(255,215,0,0.2)'; }}
+    else                    {{ col='#00ff9d'; ringCol='rgba(0,255,157,0.15)'; }}
+    const pulse=0.5+0.5*Math.sin(Date.now()*0.004+agv.id*0.7);
+    ctx.beginPath(); ctx.arc(px,py,R*(1.4+pulse*0.3),0,Math.PI*2);
+    ctx.fillStyle=ringCol; ctx.fill();
+    ctx.shadowBlur=agv.failed?20:(agv.intercept?18:12); ctx.shadowColor=col;
+    ctx.beginPath(); ctx.arc(px,py,R,0,Math.PI*2);
+    ctx.fillStyle=col+'22'; ctx.fill();
+    ctx.strokeStyle=col; ctx.lineWidth=2; ctx.stroke(); ctx.shadowBlur=0;
+    ctx.beginPath(); ctx.arc(px,py,R*0.35,0,Math.PI*2);
+    ctx.fillStyle=col; ctx.fill();
+    ctx.fillStyle=agv.failed?'#ff2d55':'#ffffff';
+    ctx.font=`bold ${{R*0.65}}px Rajdhani`;
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText(agv.id,px,py);
+    const bw=R*1.8;
+    ctx.fillStyle='#0a1f35'; ctx.fillRect(px-bw/2,py+R+3,bw,3);
+    const bc=agv.battery>50?'#00ff9d':agv.battery>20?'#ffd700':'#ff2d55';
+    ctx.fillStyle=bc; ctx.fillRect(px-bw/2,py+R+3,bw*(agv.battery/100),3);
+    if(agv.failed) {{
+      ctx.strokeStyle='#ff2d55'; ctx.lineWidth=2;
+      const x=R*0.5;
+      ctx.beginPath(); ctx.moveTo(px-x,py-x); ctx.lineTo(px+x,py+x); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(px+x,py-x); ctx.lineTo(px-x,py+x); ctx.stroke();
+    }}
+    if(agv.intercept&&!agv.failed) {{
+      ctx.fillStyle='#ff7b00'; ctx.font=`${{R*0.7}}px Rajdhani`;
+      ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.fillText('⚡',px+R+4,py-R);
+    }}
+  }}
+}}
+
+function frame(ts) {{
+  if(!running) {{ lastTime=ts; requestAnimationFrame(frame); return; }}
+  const dt=ts-lastTime; lastTime=ts;
+  stepAccum+=dt;
+  if(stepAccum>=STEP_MS/speed) {{ stepAccum=0; stepSim(); updateSidebar(); }}
+  ctx.clearRect(0,0,cw,ch);
+  const g=ctx.createRadialGradient(cw/2,ch/2,0,cw/2,ch/2,Math.max(cw,ch)/2);
+  g.addColorStop(0,'#020c18'); g.addColorStop(1,'#010810');
+  ctx.fillStyle=g; ctx.fillRect(0,0,cw,ch);
+  drawGrid(); drawTrails(); drawLines(); drawTasks(); drawAGVs();
+  requestAnimationFrame(frame);
+}}
+
+// ── Sidebar ──────────────────────────────────────────────────────
+function updateSidebar() {{
+  document.getElementById('s-active').textContent=agvs.filter(a=>!a.failed&&a.task).length;
+  document.getElementById('s-failed').textContent=agvs.filter(a=>a.failed).length;
+  document.getElementById('s-intercept').textContent=agvs.filter(a=>a.intercept&&!a.failed).length;
+  document.getElementById('s-tasks').textContent=tasks.filter(t=>!t.completed).length;
+  document.getElementById('s-done').textContent=completedCount;
+  document.getElementById('alist').innerHTML=agvs.map(agv=>{{
+    let cls='acard', dot='#00ff9d', lbl='IDLE';
+    if(agv.failed){{cls+=' failed';dot='#ff2d55';lbl='FAILED';}}
+    else if(agv.intercept){{cls+=' intercepting';dot='#ff7b00';lbl='INTERCEPT';}}
+    else if(agv.task){{cls+=' working';dot='#00d4ff';lbl='WORKING';}}
+    else if(agv.battery<30){{cls+=' charging';dot='#ffd700';lbl='CHARGING';}}
+    const bc=agv.battery>50?'#00ff9d':agv.battery>20?'#ffd700':'#ff2d55';
+    const info=agv.failed
+      ?`<div class="ainfo" style="color:#ff2d55">⚠️ ${{agv.faultType}}</div>`
+      :agv.intercept
+      ?`<div class="ainfo hl">⚡ ${{agv.intercept}}</div>`
+      :agv.task
+      ?`<div class="ainfo">→ T-${{agv.task.id}} (${{agv.x.toFixed(1)}},${{agv.y.toFixed(1)}})</div>`
+      :`<div class="ainfo">Done: ${{agv.tasksDone}}</div>`;
+    return `<div class="${{cls}}">
+      <div class="arow">
+        <span class="aid"><span class="sdot" style="background:${{dot}}"></span>AGV-${{String(agv.id).padStart(3,'0')}}</span>
+        <span style="font-size:9px;letter-spacing:1px;color:${{dot}}">${{lbl}}</span>
+      </div>
+      <div class="bbar"><div class="bfill" style="width:${{agv.battery}}%;background:${{bc}}"></div></div>
+      <div class="arow" style="margin-top:2px">
+        <span style="font-size:9px;color:#3a6a8a">🔋${{agv.battery.toFixed(0)}}%</span>
+        <span style="font-size:9px;color:#3a6a8a">(${{agv.x.toFixed(0)}},${{agv.y.toFixed(0)}})</span>
+      </div>${{info}}</div>`;
+  }}).join('');
+}}
+
+function renderLog() {{
+  document.getElementById('logp').innerHTML=logs.slice(0,50).map(l=>
+    `<div class="le ${{l.type}}"><span style="color:#1a4a6a">[${{l.ts}}]</span> ${{l.msg}}</div>`
+  ).join('');
+}}
+
+// ── Controls ─────────────────────────────────────────────────────
+document.getElementById('btn-pause').addEventListener('click',function(){{
+  running=!running;
+  this.textContent=running?'⏸ PAUSE':'▶ PLAY';
+  this.classList.toggle('active',running);
+}});
+document.getElementById('btn-fault').addEventListener('click',()=>{{
+  const a=agvs.filter(x=>!x.failed);
+  if(a.length) triggerFault(a[Math.floor(Math.random()*a.length)]);
+}});
+document.getElementById('btn-reset').addEventListener('click',()=>{{
+  taskIdCounter=NUM_TASKS+1000; completedCount=0;
+  agvs=INIT_AGVS.length?INIT_AGVS.map(makeAGVFromState):Array.from({{length:NUM_AGVS}},(_,i)=>makeAGV(i));
+  tasks=INIT_TASKS.length?INIT_TASKS.map(makeTaskFromState):Array.from({{length:NUM_TASKS}},(_,i)=>makeTask(i));
+  logs=[]; addLog('🔄 Reset — reloaded Streamlit state','assign'); assignTasks(); updateSidebar();
+}});
+document.getElementById('spd').addEventListener('input',function(){{
+  speed=parseFloat(this.value);
+  document.getElementById('sp-lbl').textContent=speed+'x';
+}});
+
+// ── Tooltip ──────────────────────────────────────────────────────
+canvas.addEventListener('mousemove',e=>{{
+  const r=canvas.getBoundingClientRect();
+  const mx=(e.clientX-r.left)*(cw/r.width), my=(e.clientY-r.top)*(ch/r.height);
+  const wx=(mx-padX)/cellW, wy=(my-padY)/cellH;
+  const tt=document.getElementById('tt');
+  let found=null;
+  for(const a of agvs){{ if(dist({{x:wx,y:wy}},a)<1.2){{found={{t:'agv',d:a}};break;}} }}
+  if(!found) for(const t of tasks){{ if(dist({{x:wx,y:wy}},t)<0.8){{found={{t:'task',d:t}};break;}} }}
+  if(found){{
+    if(found.t==='agv'){{
+      const a=found.d;
+      tt.innerHTML=`AGV-${{String(a.id).padStart(3,'0')}}<br>🔋 ${{a.battery.toFixed(1)}}%<br>${{a.failed?a.faultType:a.intercept?'INTERCEPT':a.task?'WORKING':'IDLE'}}<br>Pos (${{a.x.toFixed(1)}},${{a.y.toFixed(1)}})<br>Done: ${{a.tasksDone}}`;
+    }} else {{
+      const t=found.d;
+      tt.innerHTML=`Task T-${{t.id}}<br>Priority P${{t.priority}}<br>Assigned: ${{t.assignedTo!==null?`AGV-${{String(t.assignedTo).padStart(3,'0')}}`:'None'}}<br>Pos (${{t.x.toFixed(1)}},${{t.y.toFixed(1)}})`;
+    }}
+    tt.style.display='block';
+    tt.style.left=(e.clientX+15)+'px';
+    tt.style.top=(e.clientY-10)+'px';
+  }} else tt.style.display='none';
+}});
+canvas.addEventListener('mouseleave',()=>document.getElementById('tt').style.display='none');
+
+// ── Init ─────────────────────────────────────────────────────────
+window.addEventListener('resize',resize);
+resize();
+assignTasks();
+updateSidebar();
+addLog('🚀 Live map initialised with Streamlit fleet state','assign');
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>"""
+
+
+# ======================================
+# 🧩 HELPER: serialize state for map
+# ======================================
+def serialize_agvs(agvs):
+    return [
+        {
+            "id": a.id,
+            "x": round(a.x, 2),
+            "y": round(a.y, 2),
+            "batterylevel": round(a.batterylevel, 1),
+            "failed": a.failed,
+            "faulttype": a.faulttype,
+            "taskcompletioncount": a.taskcompletioncount,
+        }
+        for a in agvs
+    ]
+
+def serialize_tasks(tasks):
+    return [
+        {
+            "id": t.id,
+            "x": round(t.x, 2),
+            "y": round(t.y, 2),
+            "priority": t.priority,
+            "assignedagvid": t.assignedagvid,
+        }
+        for t in tasks if not t.completed
+    ]
+
 
 # --- AGV, Task, Warehouse Classes ---
 class AGV:
@@ -376,33 +951,25 @@ st.markdown("""
     </div>
 """, unsafe_allow_html=True)
 
-# --- Sidebar Controls ---
+# --- Sidebar ---
 with st.sidebar:
-    # 1. 3D Cartoon Avatar Display
     user_email = st.session_state.get('user_email', 'User')
-    
     st.markdown(f"""
         <div style="text-align: center; margin-top: 15px; margin-bottom: 15px;">
-            <img src="https://cdn-icons-png.flaticon.com/512/8345/8345328.png" 
-                 style="width: 110px; height: 110px; border-radius: 50%; 
-                        box-shadow: 0 8px 20px rgba(102, 126, 234, 0.25); 
-                        border: 3px solid #667eea; object-fit: cover; 
-                        background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
-                        transition: transform 0.3s ease;">
+            <img src="https://cdn-icons-png.flaticon.com/512/8345/8345328.png"
+                 style="width: 110px; height: 110px; border-radius: 50%;
+                        box-shadow: 0 8px 20px rgba(102, 126, 234, 0.25);
+                        border: 3px solid #667eea; object-fit: cover;">
         </div>
     """, unsafe_allow_html=True)
-    
     st.success(f"👋 {user_email}")
-    
     if st.button("🚪 Logout", use_container_width=True):
         for key in list(st.session_state.keys()):
             del st.session_state[key]
         st.rerun()
 
-    # 2. System Controls
     st.markdown("<div class='control-section'>", unsafe_allow_html=True)
     st.markdown("### 🎛️ System Controls")
-
     col1, col2 = st.columns(2)
     with col1:
         if st.button("🎯 Smart Assignment", key="smart_assign"):
@@ -412,7 +979,6 @@ with st.sidebar:
                 st.success(f"✅ {assignments} tasks assigned!")
             else:
                 st.warning("⚠️ No assignments possible")
-
     with col2:
         if st.button("🚨 Emergency Recovery", key="emergency"):
             recovered = 0
@@ -422,45 +988,33 @@ with st.sidebar:
                     recovered += 1
             if recovered > 0:
                 st.success(f"🔧 {recovered} AGVs recovered!")
-
     if st.button("🔄 Recover Lost Tasks", key="recover"):
         recovered = st.session_state.warehouse.taskassignmentsystem.recoverlosttasks(
             st.session_state.agvs, st.session_state.log)
         if recovered > 0:
             st.success(f"📋 {recovered} tasks recovered!")
-
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # 3. Simulation Controls
     st.markdown("<div class='control-section'>", unsafe_allow_html=True)
     st.markdown("### ⚙️ Simulation")
     st.session_state.autorun = st.toggle("🔄 Auto Simulation", value=st.session_state.autorun)
     simulation_speed = st.slider("Simulation Speed", 0.5, 5.0, 2.0, 0.5)
-
     if st.button("▶️ Manual Step", key="manual_step"):
         for agv in st.session_state.agvs:
-            agv.inducefault(
-                st.session_state.log,
-                st.session_state.tasks,
-                st.session_state.agvs,
-                st.session_state.warehouse.taskassignmentsystem
-            )
+            agv.inducefault(st.session_state.log, st.session_state.tasks, st.session_state.agvs, st.session_state.warehouse.taskassignmentsystem)
             agv.autorecover(st.session_state.log)
             completed_task = agv.move()
             if completed_task:
                 st.session_state.completedtasks.append(completed_task)
                 st.session_state.log.append(f"✅ Task T-{completed_task.id} completed by AGV-{agv.id:03d}")
-        st.session_state.warehouse.taskassignmentsystem.smarttaskassignment(
-            st.session_state.tasks, st.session_state.agvs, st.session_state.log)
+        st.session_state.warehouse.taskassignmentsystem.smarttaskassignment(st.session_state.tasks, st.session_state.agvs, st.session_state.log)
         st.session_state.stepcount += 1
         kpis = st.session_state.warehouse.calculatekpis(st.session_state.agvs, st.session_state.tasks)
         kpis['step'] = st.session_state.stepcount
         st.session_state.kpihistory.append(kpis)
         st.rerun()
-
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # 4. Quick Status Metrics
     st.markdown("<div class='control-section'>", unsafe_allow_html=True)
     st.markdown("### 📊 Quick Status")
     if st.session_state.kpihistory:
@@ -480,30 +1034,24 @@ with st.sidebar:
         """, unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
-# Auto-run logic
+# Auto-run
 if st.session_state.autorun:
     time.sleep(1.0 / simulation_speed)
     for agv in st.session_state.agvs:
-        agv.inducefault(
-            st.session_state.log,
-            st.session_state.tasks,
-            st.session_state.agvs,
-            st.session_state.warehouse.taskassignmentsystem
-        )
+        agv.inducefault(st.session_state.log, st.session_state.tasks, st.session_state.agvs, st.session_state.warehouse.taskassignmentsystem)
         agv.autorecover(st.session_state.log)
         completed_task = agv.move()
         if completed_task:
             st.session_state.completedtasks.append(completed_task)
             st.session_state.log.append(f"✅ Task T-{completed_task.id} completed by AGV-{agv.id:03d}")
-    st.session_state.warehouse.taskassignmentsystem.smarttaskassignment(
-        st.session_state.tasks, st.session_state.agvs, st.session_state.log)
+    st.session_state.warehouse.taskassignmentsystem.smarttaskassignment(st.session_state.tasks, st.session_state.agvs, st.session_state.log)
     st.session_state.stepcount += 1
     kpis = st.session_state.warehouse.calculatekpis(st.session_state.agvs, st.session_state.tasks)
     kpis['step'] = st.session_state.stepcount
     st.session_state.kpihistory.append(kpis)
     st.rerun()
 
-# KPI Status Alerts
+# KPI alerts
 if st.session_state.kpihistory:
     latest_kpi = st.session_state.kpihistory[-1]
     availability = latest_kpi['availability']
@@ -535,28 +1083,19 @@ with tab1:
         col4.metric("📋 Pending Tasks", latest_kpi['pendingtasks'], delta=int(delta_pending), delta_color="inverse")
         delta_reassign = latest_kpi['reassignmentrate'] - st.session_state.kpihistory[-2]['reassignmentrate'] if len(st.session_state.kpihistory) > 1 else 0
         col5.metric("🔄 Reassignment Rate", f"{latest_kpi['reassignmentrate']:.1f}%", delta=f"{delta_reassign:.1f}%", delta_color="inverse")
-
     if len(st.session_state.kpihistory) > 1:
         st.markdown("### 📈 Performance Trends")
         df_kpi = pd.DataFrame(st.session_state.kpihistory)
-        fig = make_subplots(
-            rows=2, cols=3,
+        fig = make_subplots(rows=2, cols=3,
             subplot_titles=("🎯 Fleet Availability (%)", "🔄 Reassignment Rate (%)", "⚡ Task Efficiency (%)",
                             "🌐 Network Health (%)", "🔋 Avg Battery Level (%)", "📊 System Load"),
-            vertical_spacing=0.12, horizontal_spacing=0.08
-        )
-        fig.add_trace(go.Scatter(x=df_kpi['step'], y=df_kpi['availability'], mode="lines+markers",
-            line=dict(color='#10b981', width=3), marker=dict(size=8)), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df_kpi['step'], y=df_kpi['reassignmentrate'], mode="lines+markers",
-            line=dict(color='#f59e0b', width=3), marker=dict(size=8)), row=1, col=2)
-        fig.add_trace(go.Scatter(x=df_kpi['step'], y=df_kpi['efficiency'], mode="lines+markers",
-            line=dict(color='#3b82f6', width=3), marker=dict(size=8)), row=2, col=1)
-        fig.add_trace(go.Scatter(x=df_kpi['step'], y=df_kpi['networkhealth'], mode="lines+markers",
-            line=dict(color='#8b5cf6', width=3), marker=dict(size=8)), row=2, col=2)
-        fig.add_trace(go.Scatter(x=df_kpi['step'], y=df_kpi['avgbattery'], mode="lines+markers",
-            line=dict(color='#06b6d4', width=3), marker=dict(size=8)), row=2, col=3)
-        fig.add_trace(go.Bar(x=df_kpi['step'], y=df_kpi['pendingtasks'],
-            marker=dict(color='#ef4444', opacity=0.7)), row=1, col=3)
+            vertical_spacing=0.12, horizontal_spacing=0.08)
+        fig.add_trace(go.Scatter(x=df_kpi['step'], y=df_kpi['availability'], mode="lines+markers", line=dict(color='#10b981', width=3), marker=dict(size=8)), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df_kpi['step'], y=df_kpi['reassignmentrate'], mode="lines+markers", line=dict(color='#f59e0b', width=3), marker=dict(size=8)), row=1, col=2)
+        fig.add_trace(go.Scatter(x=df_kpi['step'], y=df_kpi['efficiency'], mode="lines+markers", line=dict(color='#3b82f6', width=3), marker=dict(size=8)), row=2, col=1)
+        fig.add_trace(go.Scatter(x=df_kpi['step'], y=df_kpi['networkhealth'], mode="lines+markers", line=dict(color='#8b5cf6', width=3), marker=dict(size=8)), row=2, col=2)
+        fig.add_trace(go.Scatter(x=df_kpi['step'], y=df_kpi['avgbattery'], mode="lines+markers", line=dict(color='#06b6d4', width=3), marker=dict(size=8)), row=2, col=3)
+        fig.add_trace(go.Bar(x=df_kpi['step'], y=df_kpi['pendingtasks'], marker=dict(color='#ef4444', opacity=0.7)), row=1, col=3)
         fig.update_layout(height=600, showlegend=False, plot_bgcolor='white', paper_bgcolor='white')
         fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='#e2e8f0')
         fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='#e2e8f0')
@@ -594,15 +1133,10 @@ with tab2:
     for agv in st.session_state.agvs:
         health_score = agv.gethealthscore()
         current_task = f"T-{agv.task.id}" if agv.task else "None"
-        if agv.failed:
-            status, status_class = "Failed", "status-failed"
-        elif agv.task:
-            status, status_class = "Working", "status-working"
-        elif agv.batterylevel < 30:
-            status, status_class = "Charging", "status-charging"
-        else:
-            status, status_class = "Available", "status-available"
-
+        if agv.failed: status, status_class = "Failed", "status-failed"
+        elif agv.task: status, status_class = "Working", "status-working"
+        elif agv.batterylevel < 30: status, status_class = "Charging", "status-charging"
+        else: status, status_class = "Available", "status-available"
         with st.container():
             col1, col2, col3, col4 = st.columns([2, 2, 2, 4])
             with col1:
@@ -631,95 +1165,23 @@ with tab2:
                 else:
                     st.write(f"Task: {current_task}")
 
+# ============================================================
+# 🗺️  TAB 3 — LIVE MAP (60fps canvas, seeded from Streamlit)
+# ============================================================
 with tab3:
-    st.markdown("### 🗺️ Live Digital Twin & Traffic Control")
-    col1, col2, col3 = st.columns(3)
-    show_paths = col1.toggle("Show Movement Trails", value=True)
-    show_intentions = col2.toggle("Show Intention Lines", value=True)
-    theme = col3.selectbox("Map Theme", ["Cyber Night", "Blueprint Mode"])
-
-    fig = go.Figure()
-    is_dark = theme == "Cyber Night"
-    bg_color = '#020617' if is_dark else '#f8fafc'
-    grid_color = '#1e293b' if is_dark else '#e2e8f0'
-    text_color = '#94a3b8' if is_dark else '#475569'
-
-    for agv in st.session_state.agvs:
-        if agv.failed:
-            fig.add_shape(type="circle", x0=agv.x-2, y0=agv.y-2, x1=agv.x+2, y1=agv.y+2,
-                fillcolor="rgba(239,68,68,0.1)", line_color="rgba(239,68,68,0.5)", line_dash="dot", layer="below")
-
-    if show_paths:
-        for agv in st.session_state.agvs:
-            if len(agv.path_history) > 1 and not agv.failed:
-                hx = [p[0] for p in agv.path_history]
-                hy = [p[1] for p in agv.path_history]
-                trail_color = '#3b82f6' if agv.task else '#10b981'
-                fig.add_trace(go.Scatter(x=hx, y=hy, mode='lines',
-                    line=dict(color='rgba(59,130,246,0.1)', width=8), hoverinfo='skip', showlegend=False))
-                fig.add_trace(go.Scatter(x=hx, y=hy, mode='lines',
-                    line=dict(color=trail_color, width=2), hoverinfo='skip', showlegend=False))
-
-    if show_intentions:
-        for agv in st.session_state.agvs:
-            if agv.task and not agv.failed:
-                if agv.intercept_info:
-                    fig.add_trace(go.Scatter(x=[agv.x, agv.task.x], y=[agv.y, agv.task.y], mode='lines',
-                        line=dict(color='rgba(249,115,22,0.2)', width=8), showlegend=False))
-                    fig.add_trace(go.Scatter(x=[agv.x, agv.task.x], y=[agv.y, agv.task.y], mode='lines',
-                        line=dict(color='#f97316', width=3, dash='dash'), showlegend=False))
-                else:
-                    fig.add_trace(go.Scatter(x=[agv.x, agv.task.x], y=[agv.y, agv.task.y], mode='lines',
-                        line=dict(color='rgba(59,130,246,0.3)', width=1, dash='dot'), showlegend=False))
-
-    for task in st.session_state.tasks:
-        if task.completed: continue
-        is_abandoned = any(a.failed and a.losttask and a.losttask.id == task.id for a in st.session_state.agvs)
-        color = '#ef4444' if is_abandoned else '#10b981' if task.priority == 1 else '#f59e0b'
-        fig.add_trace(go.Scatter(x=[task.x], y=[task.y], mode="markers",
-            marker=dict(symbol='square', size=14, color=color),
-            text=[f"📦 <b>Task T-{task.id}</b><br>Priority: {task.priority}"],
-            hovertemplate='%{text}<extra></extra>', showlegend=False))
-
-    agv_groups = {
-        'Idle': {'x': [], 'y': [], 'text': [], 'core': '#10b981', 'ring': 'rgba(16,185,129,0.4)', 'symbol': 'circle'},
-        'Working': {'x': [], 'y': [], 'text': [], 'core': '#3b82f6', 'ring': 'rgba(59,130,246,0.4)', 'symbol': 'triangle-up'},
-        'Intercepting': {'x': [], 'y': [], 'text': [], 'core': '#f97316', 'ring': 'rgba(249,115,22,0.4)', 'symbol': 'triangle-up'},
-        'Low Battery': {'x': [], 'y': [], 'text': [], 'core': '#f59e0b', 'ring': 'rgba(245,158,11,0.4)', 'symbol': 'circle'},
-        'Failed': {'x': [], 'y': [], 'text': [], 'core': '#ef4444', 'ring': 'rgba(239,68,68,0.4)', 'symbol': 'x'}
-    }
-    for agv in st.session_state.agvs:
-        if agv.failed: s = 'Failed'
-        elif agv.intercept_info: s = 'Intercepting'
-        elif agv.task: s = 'Working'
-        elif agv.batterylevel < 30: s = 'Low Battery'
-        else: s = 'Idle'
-        td = f"<br><b style='color:orange;'>⚠️ {agv.intercept_info}</b>" if agv.intercept_info else ""
-        agv_groups[s]['x'].append(agv.x)
-        agv_groups[s]['y'].append(agv.y)
-        agv_groups[s]['text'].append(f"🤖 <b>AGV-{agv.id:03d}</b><br>🔋 {agv.batterylevel:.1f}%<br>📡 {s}{td}")
-
-    for status, data in agv_groups.items():
-        if not data['x']: continue
-        fig.add_trace(go.Scatter(x=data['x'], y=data['y'], mode="markers",
-            marker=dict(symbol='circle-open', size=28, color=data['ring'], line_width=2),
-            showlegend=False, hoverinfo='skip'))
-        fig.add_trace(go.Scatter(x=data['x'], y=data['y'], mode="markers",
-            marker=dict(symbol=data['symbol'], size=14, color=data['core'], line=dict(width=2, color=bg_color)),
-            text=data['text'], hovertemplate='%{text}<extra></extra>', name=status))
-
-    fig.update_layout(
-        xaxis=dict(range=[-2, st.session_state.GRIDSIZE+2], showgrid=True, gridwidth=1,
-            gridcolor=grid_color, tickmode='linear', dtick=5, showticklabels=False),
-        yaxis=dict(range=[-2, st.session_state.GRIDSIZE+2], showgrid=True, gridwidth=1,
-            gridcolor=grid_color, tickmode='linear', dtick=5, showticklabels=False),
-        plot_bgcolor=bg_color, paper_bgcolor=bg_color, height=650,
-        margin=dict(l=10, r=10, t=10, b=10),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
-            font=dict(color=text_color), bgcolor='rgba(0,0,0,0)'),
-        hoverlabel=dict(bgcolor=bg_color, font_size=14, font_family="Inter")
+    st.markdown("### 🗺️ Live Digital Twin — Real-time AGV Map")
+    st.info(
+        "⚡ This map runs its own 60fps simulation, seeded with the current Streamlit fleet state. "
+        "Use **⚡ FAULT**, **↺ RESET**, and the speed slider directly on the map. "
+        "Hit **Manual Step** or enable **Auto Simulation** in the sidebar to push updated positions from Streamlit into the map on the next page load.",
+        icon="ℹ️"
     )
-    st.plotly_chart(fig, use_container_width=True)
+
+    agv_state  = serialize_agvs(st.session_state.agvs)
+    task_state = serialize_tasks(st.session_state.tasks)
+    live_map_html = build_live_map_html(agv_state, task_state, GRIDSIZE)
+
+    components.html(live_map_html, height=720, scrolling=False)
 
 with tab4:
     st.markdown("### 🔄 Job Recovery & Task Management")
@@ -800,7 +1262,6 @@ with tab5:
                 colorscale='RdYlGn', texttemplate="%{z:.1f}", textfont={"size": 10}))
             fig_heat.update_layout(title="🌡️ System Health Heatmap", height=400)
             st.plotly_chart(fig_heat, use_container_width=True)
-
         st.markdown("#### 🔮 Predictive Insights")
         insights = []
         if df_kpi['availability'].tail(5).mean() < 80:
@@ -824,25 +1285,14 @@ with st.expander("📝 System Event Log", expanded=False):
     log_filter = col1.selectbox("🔍 Filter", ["All", "🚨 Failures", "✅ Recoveries", "📋 Task Events", "🔄 Reassignments"])
     log_level = col2.selectbox("📊 Log Level", ["All", "Critical", "Warning", "Info"])
     max_entries = col3.number_input("Max Entries", 5, 50, 20)
-
-    if log_filter == "🚨 Failures":
-        filtered_log = [e for e in st.session_state.log if "FAULT" in e or "🚨" in e]
-    elif log_filter == "✅ Recoveries":
-        filtered_log = [e for e in st.session_state.log if "RECOVERY" in e or "✅" in e or "🔧" in e]
-    elif log_filter == "📋 Task Events":
-        filtered_log = [e for e in st.session_state.log if any(k in e for k in ["completed", "Task T-", "📋"])]
-    elif log_filter == "🔄 Reassignments":
-        filtered_log = [e for e in st.session_state.log if "REASSIGNMENT" in e or "🔄" in e]
-    else:
-        filtered_log = st.session_state.log
-
-    if log_level == "Critical":
-        filtered_log = [e for e in filtered_log if any(i in e for i in ["🚨", "FAULT", "CRITICAL"])]
-    elif log_level == "Warning":
-        filtered_log = [e for e in filtered_log if any(i in e for i in ["⚠️", "WARNING"])]
-    elif log_level == "Info":
-        filtered_log = [e for e in filtered_log if not any(i in e for i in ["🚨", "⚠️", "FAULT"])]
-
+    if log_filter == "🚨 Failures": filtered_log = [e for e in st.session_state.log if "FAULT" in e or "🚨" in e]
+    elif log_filter == "✅ Recoveries": filtered_log = [e for e in st.session_state.log if "RECOVERY" in e or "✅" in e or "🔧" in e]
+    elif log_filter == "📋 Task Events": filtered_log = [e for e in st.session_state.log if any(k in e for k in ["completed", "Task T-", "📋"])]
+    elif log_filter == "🔄 Reassignments": filtered_log = [e for e in st.session_state.log if "REASSIGNMENT" in e or "🔄" in e]
+    else: filtered_log = st.session_state.log
+    if log_level == "Critical": filtered_log = [e for e in filtered_log if any(i in e for i in ["🚨", "FAULT", "CRITICAL"])]
+    elif log_level == "Warning": filtered_log = [e for e in filtered_log if any(i in e for i in ["⚠️", "WARNING"])]
+    elif log_level == "Info": filtered_log = [e for e in filtered_log if not any(i in e for i in ["🚨", "⚠️", "FAULT"])]
     st.markdown(f"<div class='log-container'><strong>📊 Showing {min(len(filtered_log), max_entries)} of {len(filtered_log)} events</strong><br><br>", unsafe_allow_html=True)
     for event in reversed(filtered_log[-max_entries:]):
         ts = datetime.now().strftime("%H:%M:%S")
@@ -851,7 +1301,7 @@ with st.expander("📝 System Event Log", expanded=False):
             <span style="color:#94a3b8;">[{ts}]</span> <span style="color:{ec};">●</span> {event}</div>""", unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
-# Dynamic Task Generation
+# Dynamic task generation
 if len(st.session_state.tasks) - len(st.session_state.completedtasks) < 5 and random.random() < 0.2:
     new_task = Task(len(st.session_state.tasks) + 1000,
         random.randint(0, st.session_state.GRIDSIZE), random.randint(0, st.session_state.GRIDSIZE),
@@ -874,7 +1324,6 @@ with col4:
     uptime = st.session_state.stepcount * 30
     st.markdown(f'<div style="text-align:center;padding:16px;"><h4 style="color:#64748b;margin:0;">⏱️ System Uptime</h4><div style="font-size:24px;font-weight:bold;color:#8b5cf6;">{uptime//3600:02d}:{(uptime%3600)//60:02d}</div></div>', unsafe_allow_html=True)
 
-# Real-time notifications
 if st.session_state.log:
     recent = st.session_state.log[-3:]
     for event in recent:
