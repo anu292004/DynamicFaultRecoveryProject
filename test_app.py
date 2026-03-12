@@ -59,9 +59,9 @@ def show_login():
         st.markdown('<p class="main-title">🤖 AGV Fleet Control</p>', unsafe_allow_html=True)
         st.markdown('<p class="sub-title">Intelligent warehouse automation at your fingertips.</p>', unsafe_allow_html=True)
         
-        # Object 1: High-quality AGV working video
-        # I've put an example YouTube video here, but you should use your own MP4 using Option B above!
-        st.video("https://youtu.be/k-p9diuOItc")
+        # Object 1: A high-quality hero image (Using a placeholder tech/robotics image from Unsplash)
+        st.image("https://images.unsplash.com/photo-1581091226825-a6a2a5aee158?q=80&w=800&auto=format&fit=crop", 
+                 caption="Centralized Robotics Command", use_container_width=True)
         
         st.write("") # Spacer
         
@@ -69,7 +69,7 @@ def show_login():
         stat_col1, stat_col2 = st.columns(2)
         stat_col1.info("🟢 **System Status:** Online & Ready")
         stat_col2.success("📦 **Active AGVs:** 42 Deployed")
-
+        
     # --- RIGHT COLUMN: LOGIN FORM ---
     with col_form:
         st.markdown("<div style='margin-top: 60px;'></div>", unsafe_allow_html=True)
