@@ -55,34 +55,17 @@ def show_login():
 
   # --- LEFT COLUMN: VISUAL OBJECTS ---
     with col_img:
-        # Add some top margin to align beautifully with the right column
         st.markdown("<div style='margin-top: 40px;'></div>", unsafe_allow_html=True)
-        
-        # Titles
         st.markdown('<p class="main-title">🤖 AGV Fleet Control</p>', unsafe_allow_html=True)
         st.markdown('<p class="sub-title">Intelligent warehouse automation at your fingertips.</p>', unsafe_allow_html=True)
         
-        # Object 1: High-quality Pixabay AGV video (Local File)
-        try:
-            # Opens the downloaded Pixabay video file
-            with open("https://media.istockphoto.com/id/1204031773/video/autonomous-robots-moving-shelves-in-automated-warehouse-seamless-looping-shot.mp4?s=mp4-640x640-is&k=20&c=tLqJhYOGB443W1ezpsN1fmnUm88WM1rEMVHPiiL9hXs=", "rb") as video_file:
-                video_bytes = video_file.read()
-            
-            # Displays it as a sleek, modern UI element
-            st.video(
-                video_bytes, 
-                format="video/mp4", 
-                autoplay=True,  # Starts automatically
-                loop=True,      # Loops endlessly
-                muted=True      # Keeps it completely silent
-            )
-        except FileNotFoundError:
-            # Fallback message if the video file isn't found in the folder
-            st.info("🎥 Please place your downloaded 'agv_background.mp4' file in the same folder as this script to see the AGVs in action.")
-            
-        st.write("") # Spacer to give the widgets some breathing room
+        # Object 1: High-quality AGV working video
+        # I've put an example YouTube video here, but you should use your own MP4 using Option B above!
+        st.video("https://youtu.be/k-p9diuOItc")
         
-        # Object 2: Live status widgets to make the UI feel active and industrial
+        st.write("") # Spacer
+        
+        # Object 2: "Fake" live status widgets to make the UI feel active and industrial
         stat_col1, stat_col2 = st.columns(2)
         stat_col1.info("🟢 **System Status:** Online & Ready")
         stat_col2.success("📦 **Active AGVs:** 42 Deployed")
