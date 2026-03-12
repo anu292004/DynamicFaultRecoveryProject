@@ -65,7 +65,7 @@ def show_login():
         # Object 1: High-quality Pixabay AGV video (Local File)
         try:
             # Opens the downloaded Pixabay video file
-            with open("https://github.com/anu292004/DynamicFaultRecoveryProject/raw/refs/heads/main/agv.mp4", "rb") as video_file:
+            with open("https://media.istockphoto.com/id/1204031773/video/autonomous-robots-moving-shelves-in-automated-warehouse-seamless-looping-shot.mp4?s=mp4-640x640-is&k=20&c=tLqJhYOGB443W1ezpsN1fmnUm88WM1rEMVHPiiL9hXs=", "rb") as video_file:
                 video_bytes = video_file.read()
             
             # Displays it as a sleek, modern UI element
