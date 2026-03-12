@@ -2,12 +2,14 @@ import streamlit as st
 import streamlit.components.v1 as components
 import requests as req
 import random
+import math
 import pandas as pd
 import json
 import time
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from datetime import datetime
 
 st.set_page_config(
     page_title="AGV Fleet Manager",
@@ -120,78 +122,213 @@ iframe{border:none!important;border-radius:16px;}
 """, unsafe_allow_html=True)
 
 # ======================================
-# 🗃️ SESSION STATE
+# 🤖 PYTHON SIMULATION ENGINE
 # ======================================
-GRIDSIZE  = 25
+GRID      = 25
 NUM_AGVS  = 10
 NUM_TASKS = 18
+STEP_SIZE = 0.5   # units per step
+FAULT_PROB = 0.03
+RECOVERY_STEPS = (60, 120)
 
-def fresh_agvs():
-    return [{"id":i,"x":round(random.uniform(0,GRIDSIZE),2),"y":round(random.uniform(0,GRIDSIZE),2),
-             "battery":round(random.uniform(60,100),1),"failed":False,"faultType":None,
-             "intercept":None,"taskId":None,"tasksDone":0,"status":"idle"} for i in range(NUM_AGVS)]
+def make_agv(i):
+    return {
+        "id": i,
+        "x": round(random.uniform(1, GRID-1), 2),
+        "y": round(random.uniform(1, GRID-1), 2),
+        "battery": round(random.uniform(65, 100), 1),
+        "failed": False,
+        "fault_type": None,
+        "intercept": None,
+        "task_id": None,
+        "recovery_timer": 0,
+        "tasks_done": 0,
+        "status": "idle",
+    }
 
-def fresh_tasks():
-    return [{"id":i,"x":round(random.uniform(0,GRIDSIZE),2),"y":round(random.uniform(0,GRIDSIZE),2),
-             "priority":random.choice([1,1,2,2,3]),"assignedTo":None,"completed":False} for i in range(NUM_TASKS)]
+def make_task(i):
+    return {
+        "id": i,
+        "x": round(random.uniform(1, GRID-1), 2),
+        "y": round(random.uniform(1, GRID-1), 2),
+        "priority": random.choice([1, 1, 2, 2, 3]),
+        "assigned_to": None,
+        "completed": False,
+    }
 
-if "live_agvs" not in st.session_state:
-    st.session_state.live_agvs       = fresh_agvs()
-    st.session_state.live_tasks      = fresh_tasks()
-    st.session_state.live_logs       = []
+def dist(ax, ay, bx, by):
+    return math.sqrt((ax - bx)**2 + (ay - by)**2)
+
+def init_fleet():
+    st.session_state.agvs           = [make_agv(i) for i in range(NUM_AGVS)]
+    st.session_state.tasks          = [make_task(i) for i in range(NUM_TASKS)]
     st.session_state.completed_count = 0
     st.session_state.step_count      = 0
+    st.session_state.event_log       = []
     st.session_state.kpi_history     = []
+    st.session_state.task_id_counter = NUM_TASKS
+    st.session_state.sim_running     = True
 
-# ======================================
-# 🔄 INGEST FROM MAP
-# ======================================
-def ingest(data: dict):
-    if not data or data.get("type") != "agv_state":
+def add_log(msg, typ="assign"):
+    ts = datetime.now().strftime("%H:%M:%S")
+    st.session_state.event_log.insert(0, {"msg": msg, "type": typ, "ts": ts})
+    if len(st.session_state.event_log) > 300:
+        st.session_state.event_log = st.session_state.event_log[:300]
+
+def assign_tasks():
+    agvs  = st.session_state.agvs
+    tasks = st.session_state.tasks
+    free  = [t for t in tasks if not t["assigned_to"] and not t["completed"]]
+    idle  = [a for a in agvs if not a["failed"] and a["task_id"] is None]
+    free.sort(key=lambda t: t["priority"])
+    for t in free:
+        if not idle:
+            break
+        best = min(idle, key=lambda a: dist(a["x"], a["y"], t["x"], t["y"]))
+        t["assigned_to"] = best["id"]
+        best["task_id"]  = t["id"]
+        best["status"]   = "working"
+        idle.remove(best)
+        add_log(f"T-{t['id']} → AGV-{best['id']:03d}", "assign")
+
+def do_takeover(failed_agv, lost_task):
+    agvs = st.session_state.agvs
+    cands = [a for a in agvs if not a["failed"] and a["task_id"] is None and a["id"] != failed_agv["id"]]
+    if not cands:
+        add_log(f"⚠️ No idle AGV for T-{lost_task['id']}", "fault")
         return
-    st.session_state.live_agvs       = data.get("agvs",  st.session_state.live_agvs)
-    st.session_state.live_tasks      = data.get("tasks", st.session_state.live_tasks)
-    st.session_state.completed_count = data.get("completedCount", st.session_state.completed_count)
-    st.session_state.step_count      = data.get("stepCount",      st.session_state.step_count)
+    best = min(cands, key=lambda a: dist(a["x"], a["y"], lost_task["x"], lost_task["y"]))
+    lost_task["assigned_to"] = best["id"]
+    best["task_id"]   = lost_task["id"]
+    best["intercept"] = f"Takeover T-{lost_task['id']}←{failed_agv['id']}"
+    best["status"]    = "intercepting"
+    add_log(f"⚡ TAKEOVER: AGV-{best['id']:03d} → T-{lost_task['id']}", "takeover")
 
-    new_logs = data.get("newLogs", [])
-    if new_logs:
-        st.session_state.live_logs = (new_logs + st.session_state.live_logs)[:300]
+def trigger_fault(agv):
+    if agv["failed"]:
+        return
+    fault_types = ["LiDAR Error", "Motor Jam", "Battery Crit", "Comm Loss"]
+    agv["failed"]     = True
+    agv["fault_type"] = random.choice(fault_types)
+    agv["status"]     = "failed"
+    agv["recovery_timer"] = random.randint(*RECOVERY_STEPS)
+    add_log(f"🚨 AGV-{agv['id']:03d} FAULT: {agv['fault_type']}", "fault")
+    # Find and free the task
+    if agv["task_id"] is not None:
+        lost = next((t for t in st.session_state.tasks if t["id"] == agv["task_id"]), None)
+        agv["task_id"] = None
+        if lost:
+            lost["assigned_to"] = None
+            do_takeover(agv, lost)
+
+def sim_step():
+    """Run one simulation step — called by Python, not JS."""
+    agvs  = st.session_state.agvs
+    tasks = st.session_state.tasks
+
+    st.session_state.step_count += 1
+
+    # Random faults
+    for a in agvs:
+        if not a["failed"] and random.random() < FAULT_PROB:
+            trigger_fault(a)
+
+    # Recovery
+    for a in agvs:
+        if a["failed"]:
+            a["recovery_timer"] -= 1
+            if a["recovery_timer"] <= 0:
+                a["failed"]     = False
+                a["fault_type"] = None
+                a["intercept"]  = None
+                a["status"]     = "idle"
+                add_log(f"✅ AGV-{a['id']:03d} recovered", "recover")
+
+    # Movement
+    for a in agvs:
+        if a["failed"] or a["task_id"] is None:
+            continue
+        task = next((t for t in tasks if t["id"] == a["task_id"]), None)
+        if not task:
+            a["task_id"] = None
+            a["status"]  = "idle"
+            continue
+
+        dx = task["x"] - a["x"]
+        dy = task["y"] - a["y"]
+        d  = math.sqrt(dx*dx + dy*dy)
+
+        if d < STEP_SIZE:
+            # Task complete
+            a["x"] = task["x"]
+            a["y"] = task["y"]
+            task["completed"] = True
+            st.session_state.completed_count += 1
+            a["task_id"]   = None
+            a["intercept"] = None
+            a["status"]    = "idle"
+            a["tasks_done"] += 1
+            add_log(f"✅ T-{task['id']} done by AGV-{a['id']:03d}", "complete")
+        else:
+            a["x"] = round(a["x"] + dx / d * STEP_SIZE, 2)
+            a["y"] = round(a["y"] + dy / d * STEP_SIZE, 2)
+            a["battery"] = round(max(0, a["battery"] - 0.05), 1)
+
+    # Recharge idle
+    for a in agvs:
+        if not a["failed"] and a["task_id"] is None:
+            a["battery"] = round(min(100, a["battery"] + 0.3), 1)
+            a["status"]  = "charging" if a["battery"] < 95 else "idle"
+
+    # Remove completed tasks, spawn new ones
+    st.session_state.tasks = [t for t in tasks if not t["completed"]]
+    while len(st.session_state.tasks) < NUM_TASKS:
+        tid = st.session_state.task_id_counter
+        st.session_state.task_id_counter += 1
+        nt = make_task(tid)
+        st.session_state.tasks.append(nt)
+        add_log(f"🆕 T-{tid} spawned", "assign")
+
+    # Re-assign
+    assign_tasks()
 
     # KPI snapshot
-    agvs = st.session_state.live_agvs
     n    = len(agvs) or 1
     ok   = sum(1 for a in agvs if not a["failed"])
-    act  = sum(1 for a in agvs if a.get("taskId") is not None and not a["failed"])
+    act  = sum(1 for a in agvs if a["task_id"] is not None and not a["failed"])
     done = st.session_state.completed_count
-    tt   = len(st.session_state.live_tasks) + done or 1
+    tt   = len(st.session_state.tasks) + done or 1
+
     st.session_state.kpi_history.append({
         "step":         st.session_state.step_count,
-        "availability": round(ok  / n * 100, 1),
+        "availability": round(ok / n * 100, 1),
         "avgbattery":   round(sum(a["battery"] for a in agvs) / n, 1),
         "utilization":  round(act / n * 100, 1),
         "efficiency":   round(done / tt * 100, 1),
-        "pendingtasks": sum(1 for t in st.session_state.live_tasks if not t.get("assignedTo") and not t.get("completed")),
-        "networkhealth":round(ok  / n * 100, 1),
+        "pendingtasks": sum(1 for t in st.session_state.tasks if not t["assigned_to"]),
+        "networkhealth":round(ok / n * 100, 1),
     })
     if len(st.session_state.kpi_history) > 500:
         st.session_state.kpi_history = st.session_state.kpi_history[-500:]
 
+# ── Init on first load ──────────────────────────────────────────
+if "agvs" not in st.session_state:
+    init_fleet()
+    assign_tasks()
+
 # ======================================
-# 🗺️ LIVE MAP  (uses Streamlit component protocol)
+# 🗺️ MAP HTML (pure visualization — reads Python state)
 # ======================================
-def build_live_map_html(agv_state, task_state, grid_size=25):
-    agv_json  = json.dumps(agv_state)
-    task_json = json.dumps(task_state)
-    return f"""<!DOCTYPE html>
-<html><head><meta charset="UTF-8">
+def build_map_html(agvs, tasks, grid=25):
+    agv_json  = json.dumps(agvs)
+    task_json = json.dumps(tasks)
+    return f"""<!DOCTYPE html><html><head><meta charset="UTF-8">
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@400;600;700&display=swap');
 *{{box-sizing:border-box;margin:0;padding:0}}
 :root{{--bg:#020c18;--dim:#1a3a52;--accent:#00d4ff;--green:#00ff9d;
-       --orange:#ff7b00;--red:#ff2d55;--yellow:#ffd700;--text:#7ec8e3}}
-html,body{{width:100%;height:100%;overflow:hidden;background:var(--bg);
-  color:var(--text);font-family:'Rajdhani',sans-serif}}
+       --orange:#ff7b00;--red:#ff2d55;--text:#7ec8e3}}
+html,body{{width:100%;height:100%;overflow:hidden;background:var(--bg);color:var(--text);font-family:'Rajdhani',sans-serif}}
 #wrap{{display:flex;flex-direction:column;height:100vh}}
 header{{display:flex;align-items:center;justify-content:space-between;
   padding:7px 14px;border-bottom:1px solid var(--dim);background:rgba(0,15,30,.97);flex-shrink:0}}
@@ -202,20 +339,6 @@ header{{display:flex;align-items:center;justify-content:space-between;
 .sv{{font-size:18px;font-weight:700;color:var(--accent);font-family:'Share Tech Mono',monospace;line-height:1}}
 .sv.r{{color:var(--red)}} .sv.g{{color:var(--green)}} .sv.o{{color:var(--orange)}}
 .sl{{font-size:8px;letter-spacing:2px;text-transform:uppercase;color:#3a6a8a;margin-top:1px}}
-.ctrls{{display:flex;gap:7px;align-items:center}}
-button{{background:transparent;border:1px solid var(--accent);color:var(--accent);
-  padding:4px 10px;font-family:'Rajdhani',sans-serif;font-size:11px;font-weight:600;
-  letter-spacing:1px;cursor:pointer;transition:all .2s;text-transform:uppercase;border-radius:3px}}
-button:hover{{background:var(--accent);color:var(--bg)}}
-button.on{{background:var(--accent);color:var(--bg)}}
-button.danger{{border-color:var(--red);color:var(--red)}}
-button.danger:hover{{background:var(--red);color:#fff}}
-.spctl{{display:flex;align-items:center;gap:5px}}
-input[type=range]{{-webkit-appearance:none;height:3px;background:var(--dim);
-  border-radius:2px;outline:none;width:60px}}
-input[type=range]::-webkit-slider-thumb{{-webkit-appearance:none;width:10px;height:10px;
-  background:var(--accent);border-radius:50%;cursor:pointer}}
-#spl{{font-family:'Share Tech Mono',monospace;color:var(--accent);font-size:11px;width:24px}}
 .main{{display:flex;flex:1;overflow:hidden}}
 #cvw{{flex:1;position:relative;overflow:hidden}}
 canvas{{display:block;width:100%;height:100%}}
@@ -226,11 +349,10 @@ canvas{{display:block;width:100%;height:100%}}
 .al{{overflow-y:auto;padding:4px}}
 .al::-webkit-scrollbar{{width:3px}}
 .al::-webkit-scrollbar-thumb{{background:var(--dim);border-radius:2px}}
-.ac{{background:rgba(0,20,40,.8);border:1px solid var(--dim);border-radius:3px;
-  padding:6px;margin-bottom:4px}}
+.ac{{background:rgba(0,20,40,.8);border:1px solid var(--dim);border-radius:3px;padding:6px;margin-bottom:4px}}
 .ac.working{{border-color:rgba(0,212,255,.4)}}
 .ac.failed{{border-color:rgba(255,45,85,.6);background:rgba(40,5,15,.8)}}
-.ac.intercepting{{border-color:rgba(255,123,0,.6);background:rgba(30,15,0,.8)}}
+.ac.intercepting{{border-color:rgba(255,123,0,.6)}}
 .ac.charging{{border-color:rgba(255,215,0,.4)}}
 .ar{{display:flex;justify-content:space-between;align-items:center;margin-bottom:3px}}
 .ai{{font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--accent)}}
@@ -239,253 +361,89 @@ canvas{{display:block;width:100%;height:100%}}
 .bf{{height:100%;border-radius:2px}}
 .an{{font-size:9px;color:#3a6a8a;margin-top:2px}}
 .an.hl{{color:var(--orange);font-weight:700}}
-.lp{{height:120px;overflow-y:auto;font-family:'Share Tech Mono',monospace;
-  font-size:9px;padding:5px;background:rgba(0,5,12,.9);flex-shrink:0}}
-.lp::-webkit-scrollbar{{width:2px}}
-.lp::-webkit-scrollbar-thumb{{background:var(--dim)}}
-.le{{padding:1px 0;border-bottom:1px solid rgba(26,58,82,.3);line-height:1.4}}
-.le.fault{{color:var(--red)}} .le.takeover{{color:var(--orange)}}
-.le.complete{{color:var(--green)}} .le.assign{{color:var(--accent)}} .le.recover{{color:#9b59b6}}
+.lp{{height:0;overflow:hidden}}
 .legend{{display:flex;flex-wrap:wrap;gap:5px}}
 .li{{display:flex;align-items:center;gap:3px;font-size:9px;color:#5a8aa5}}
-.ld{{width:8px;height:8px;border-radius:50%}}
-.ls{{width:8px;height:8px;border-radius:2px}}
+.ld{{width:8px;height:8px;border-radius:50%}} .ls{{width:8px;height:8px;border-radius:2px}}
 .tt{{position:absolute;background:rgba(0,10,22,.97);border:1px solid var(--accent);
   color:var(--text);padding:6px 9px;font-size:10px;pointer-events:none;
-  border-radius:3px;display:none;white-space:nowrap;z-index:100;
-  font-family:'Share Tech Mono',monospace}}
-#syncbadge{{position:absolute;bottom:6px;right:6px;font-family:'Share Tech Mono',monospace;
-  font-size:8px;color:var(--green);opacity:0;transition:opacity .4s;letter-spacing:1px;
-  background:rgba(0,255,157,.08);border:1px solid rgba(0,255,157,.4);
-  padding:2px 7px;border-radius:3px;pointer-events:none}}
-#syncbadge.show{{opacity:1}}
+  border-radius:3px;display:none;white-space:nowrap;z-index:100;font-family:'Share Tech Mono',monospace}}
+.pulse-badge{{position:absolute;top:6px;right:6px;font-family:'Share Tech Mono',monospace;
+  font-size:8px;color:var(--green);background:rgba(0,255,157,.08);
+  border:1px solid rgba(0,255,157,.4);padding:2px 7px;border-radius:3px;letter-spacing:1px;
+  animation:blink 2s infinite}}
+@keyframes blink{{0%,100%{{opacity:1}}50%{{opacity:.4}}}}
 </style></head><body>
 <div id="wrap">
   <header>
-    <div class="brand">AGV <em>LIVE</em> <span style="color:#2a4a6a;font-size:9px;margin-left:4px">▸ DRIVING DASHBOARD</span></div>
+    <div class="brand">AGV <em>LIVE</em> <span style="color:#2a4a6a;font-size:9px;margin-left:4px">▸ PYTHON SIMULATION</span></div>
     <div class="hstats">
-      <div class="stat"><div class="sv g"  id="s0">0</div><div class="sl">Active</div></div>
-      <div class="stat"><div class="sv r"  id="s1">0</div><div class="sl">Failed</div></div>
-      <div class="stat"><div class="sv o"  id="s2">0</div><div class="sl">Intercept</div></div>
-      <div class="stat"><div class="sv"    id="s3">0</div><div class="sl">Tasks</div></div>
-      <div class="stat"><div class="sv g"  id="s4">0</div><div class="sl">Done</div></div>
-      <div class="stat"><div class="sv"    id="s5">0</div><div class="sl">Step</div></div>
-    </div>
-    <div class="ctrls">
-      <div class="spctl">
-        <span style="font-size:9px;color:#3a6a8a">SPD</span>
-        <input type="range" id="spd" min="0.5" max="5" step="0.5" value="2">
-        <span id="spl">2x</span>
-      </div>
-      <button id="bpause" class="on">⏸</button>
-      <button id="bfault" class="danger">⚡ FAULT</button>
-      <button id="breset">↺</button>
+      <div class="stat"><div class="sv g" id="s0">0</div><div class="sl">Active</div></div>
+      <div class="stat"><div class="sv r" id="s1">0</div><div class="sl">Failed</div></div>
+      <div class="stat"><div class="sv o" id="s2">0</div><div class="sl">Intercept</div></div>
+      <div class="stat"><div class="sv"   id="s3">0</div><div class="sl">Tasks</div></div>
+      <div class="stat"><div class="sv g" id="s4">0</div><div class="sl">Done</div></div>
+      <div class="stat"><div class="sv"   id="s5">0</div><div class="sl">Step</div></div>
     </div>
   </header>
   <div class="main">
     <div id="cvw">
       <canvas id="map"></canvas>
       <div class="tt" id="tt"></div>
-      <div id="syncbadge">⬆ SYNCED</div>
+      <div class="pulse-badge">🐍 PYTHON DRIVEN</div>
     </div>
     <div class="sb">
       <div class="ss"><div class="st">Fleet</div>
-        <div class="al" id="al" style="max-height:280px"></div>
+        <div class="al" id="al" style="max-height:310px"></div>
       </div>
       <div class="ss"><div class="st">Legend</div>
         <div class="legend">
           <div class="li"><div class="ld" style="background:#00ff9d"></div>Idle</div>
           <div class="li"><div class="ld" style="background:#00d4ff"></div>Work</div>
-          <div class="li"><div class="ld" style="background:#ff7b00"></div>Intercept</div>
-          <div class="li"><div class="ld" style="background:#ff2d55"></div>Failed</div>
-          <div class="li"><div class="ld" style="background:#ffd700"></div>Low Batt</div>
+          <div class="li"><div class="ld" style="background:#ff7b00"></div>ICP</div>
+          <div class="li"><div class="ld" style="background:#ff2d55"></div>Fail</div>
+          <div class="li"><div class="ld" style="background:#ffd700"></div>Charge</div>
           <div class="li"><div class="ls" style="background:#00ff9d"></div>P1</div>
           <div class="li"><div class="ls" style="background:#ffd700"></div>P2</div>
           <div class="li"><div class="ls" style="background:#ff2d55"></div>P3</div>
         </div>
       </div>
-      <div class="ss"><div class="st">Log</div></div>
-      <div class="lp" id="lp"></div>
     </div>
   </div>
 </div>
 <script>
-// ── Seed + constants ──────────────────────────────────────────────
-const INIT_AGVS  = {agv_json};
-const INIT_TASKS = {task_json};
-const GRID       = {grid_size};
-const N_AGVS     = INIT_AGVS.length  || 10;
-const N_TASKS    = INIT_TASKS.length || 18;
-const SYNC_MS    = 2000;
+// State is injected fresh from Python on every Streamlit rerun
+const AGVS  = {agv_json};
+const TASKS = {task_json};
+const GRID  = {grid};
 
-// ── Streamlit component handshake ────────────────────────────────
-// Tell Streamlit this component is ready, then send values via setComponentValue
-function stReady() {{
-  window.parent.postMessage({{type:'streamlit:componentReady',apiVersion:1}}, '*');
-}}
-function stSend(value) {{
-  window.parent.postMessage({{type:'streamlit:setComponentValue', value}}, '*');
-}}
+// Build smooth-interpolation state for 60fps rendering
+// Python gives us the target positions; we glide there visually
+const vis = AGVS.map(a => ({{
+  ...a,
+  vx: a.x, vy: a.y,   // visual position (interpolated)
+  tx: a.x, ty: a.y,   // target (Python's position)
+  trail: [],
+}}));
 
-// ── State ─────────────────────────────────────────────────────────
+const taskMap = {{}};
+TASKS.forEach(t => taskMap[t.id] = t);
+
 const canvas = document.getElementById('map');
 const ctx    = canvas.getContext('2d');
-let running = true, speed = 2;
-let completedCount = 0, stepCount = 0;
-let stepAccum = 0, lastTime = 0, lastSyncTime = 0;
-const STEP_MS = 500;
-let tid = 100000;
-let logs = [], pendingLogs = [];
+let cw, ch, cW, cH, px0, py0, lastTime = 0;
 
-function mkAGV(s) {{
-  return {{
-    id: s.id,
-    x:  +s.x || Math.random()*GRID,
-    y:  +s.y || Math.random()*GRID,
-    bat: +(s.battery ?? s.batterylevel) || 80,
-    failed: !!s.failed,
-    fault:  s.faultType||s.faulttype||null,
-    icp: s.intercept||null,
-    task:null, lost:null,
-    trail:[], flash:0, rtimer:0,
-    done: +(s.tasksDone||s.taskcompletioncount)||0,
-  }};
-}}
-function nAGV(id) {{ return mkAGV({{id,x:Math.random()*GRID,y:Math.random()*GRID,battery:70+Math.random()*30}}); }}
-
-function mkTask(s) {{
-  return {{
-    id:s.id, x:+s.x||Math.random()*GRID, y:+s.y||Math.random()*GRID,
-    pri:s.priority||1, asgn:null, done:false, age:0, sparkle:0,
-  }};
-}}
-function nTask(id) {{ return mkTask({{id,priority:[1,1,2,2,3][Math.floor(Math.random()*5)]}}); }}
-
-let agvs  = INIT_AGVS.map(mkAGV);
-let tasks = INIT_TASKS.map(mkTask);
-
-const dist = (a,b) => Math.sqrt((a.x-b.x)**2+(a.y-b.y)**2);
-
-function log(msg, type='assign') {{
-  const ts = new Date().toLocaleTimeString('en',{{hour12:false}});
-  const e = {{msg,type,ts}};
-  logs.unshift(e); pendingLogs.unshift(e);
-  if (logs.length>100) logs.pop();
-  renderLog();
-}}
-
-// ── Sim ───────────────────────────────────────────────────────────
-function assign() {{
-  const free = tasks.filter(t=>!t.asgn&&!t.done);
-  const idle = agvs.filter(a=>!a.failed&&!a.task);
-  free.sort((a,b)=>a.pri-b.pri);
-  for (const t of free) {{
-    if (!idle.length) break;
-    const best = idle.reduce((b,a)=>dist(a,t)<dist(b,t)?a:b);
-    t.asgn=best.id; best.task=t;
-    idle.splice(idle.indexOf(best),1);
-    log(`T-${{t.id}}→AGV-${{String(best.id).padStart(3,'0')}}`,'assign');
-  }}
-}}
-
-function takeover(fa) {{
-  if (!fa.lost) return;
-  const c = agvs.filter(a=>!a.failed&&!a.task&&a.id!==fa.id);
-  if (!c.length) {{ log(`⚠️ No idle for T-${{fa.lost.id}}`,'fault'); return; }}
-  const b = c.reduce((x,a)=>dist(a,fa.lost)<dist(x,fa.lost)?a:x);
-  fa.lost.asgn=b.id; b.task=fa.lost;
-  b.icp=`Takeover T-${{fa.lost.id}}←${{fa.id}}`;
-  fa.lost=null;
-  log(`⚡ TAKEOVER AGV-${{String(b.id).padStart(3,'0')}}→T-${{b.task.id}}`,'takeover');
-}}
-
-function fault(a) {{
-  if (a.failed) return;
-  a.failed=true;
-  a.fault=['LiDAR Err','Motor Jam','Bat Crit','Comm Loss'][Math.floor(Math.random()*4)];
-  a.flash=60;
-  if (a.task) {{
-    a.lost=a.task; a.task.asgn=null; a.task=null;
-    log(`🚨 AGV-${{String(a.id).padStart(3,'0')}} ${{a.fault}}`,'fault');
-    takeover(a);
-  }} else log(`🚨 AGV-${{String(a.id).padStart(3,'0')}} ${{a.fault}}`,'fault');
-  a.rtimer=180+Math.random()*120;
-}}
-
-function step() {{
-  stepCount++;
-  for (const a of agvs) if (!a.failed&&Math.random()<0.015) fault(a);
-  for (const a of agvs) {{
-    if (!a.failed) continue;
-    if (--a.rtimer<=0) {{
-      a.failed=false; a.fault=null; a.icp=null;
-      log(`✅ AGV-${{String(a.id).padStart(3,'0')}} recovered`,'recover');
-    }}
-  }}
-  for (const a of agvs) {{
-    if (a.failed||!a.task) continue;
-    const t=a.task, dx=t.x-a.x, dy=t.y-a.y, d=Math.sqrt(dx*dx+dy*dy), s=0.35*speed;
-    if (d<s) {{
-      a.x=t.x; a.y=t.y; t.done=true; completedCount++;
-      a.task=null; a.icp=null; a.done++; t.sparkle=30;
-      log(`✅ T-${{t.id}} AGV-${{String(a.id).padStart(3,'0')}}`,'complete');
-    }} else {{ a.x+=dx/d*s; a.y+=dy/d*s; }}
-    a.bat=Math.max(0,a.bat-0.03*speed);
-    a.trail.push({{x:a.x,y:a.y}});
-    if (a.trail.length>40) a.trail.shift();
-  }}
-  for (const a of agvs)
-    if (!a.task&&!a.failed&&a.bat<100) a.bat=Math.min(100,a.bat+0.2*speed);
-  assign();
-  tasks=tasks.filter(t=>!t.done);
-  while (tasks.length<N_TASKS) {{
-    const nt=nTask(tid++); tasks.push(nt); nt.sparkle=20;
-    log(`🆕 T-${{nt.id}}`,'assign');
-  }}
-}}
-
-// ── SYNC via Streamlit component protocol ─────────────────────────
-function sync() {{
-  const now=Date.now();
-  if (now-lastSyncTime<SYNC_MS) return;
-  lastSyncTime=now;
-
-  const payload = {{
-    type: 'agv_state',
-    agvs: agvs.map(a=>{{
-      const s = a.failed?'failed':a.icp?'intercepting':a.task?'working':a.bat<30?'charging':'idle';
-      return {{
-        id:a.id, x:+a.x.toFixed(2), y:+a.y.toFixed(2),
-        battery:+a.bat.toFixed(1), failed:a.failed,
-        faultType:a.fault, intercept:a.icp,
-        taskId:a.task?a.task.id:null, tasksDone:a.done, status:s,
-      }};
-    }}),
-    tasks: tasks.map(t=>{{
-      return {{id:t.id, x:+t.x.toFixed(2), y:+t.y.toFixed(2),
-               priority:t.pri, assignedTo:t.asgn, completed:t.done}};
-    }}),
-    completedCount, stepCount,
-    newLogs: pendingLogs.splice(0,40),
-  }};
-
-  // ✅ Use Streamlit's official component value channel
-  stSend(payload);
-
-  const b=document.getElementById('syncbadge');
-  b.classList.add('show');
-  setTimeout(()=>b.classList.remove('show'),700);
-}}
-
-// ── Render ────────────────────────────────────────────────────────
-let cw,ch,cW,cH,px0,py0;
 function resize() {{
-  const el=document.getElementById('cvw');
-  cw=canvas.width=el.clientWidth; ch=canvas.height=el.clientHeight;
-  const sz=Math.min(cw,ch)*.92; cW=sz/GRID; cH=sz/GRID;
-  px0=(cw-sz)/2; py0=(ch-sz)/2;
+  const el = document.getElementById('cvw');
+  cw = canvas.width  = el.clientWidth;
+  ch = canvas.height = el.clientHeight;
+  const sz = Math.min(cw, ch) * .92;
+  cW = sz / GRID; cH = sz / GRID;
+  px0 = (cw - sz) / 2; py0 = (ch - sz) / 2;
 }}
-const gx=v=>px0+v*cW, gy=v=>py0+v*cH;
+const gx = v => px0 + v * cW;
+const gy = v => py0 + v * cH;
+const dist = (a,b) => Math.sqrt((a.vx-b.x)**2+(a.vy-b.y)**2);
 
 function drawGrid() {{
   ctx.strokeStyle='rgba(10,31,53,0.8)'; ctx.lineWidth=0.5;
@@ -502,191 +460,167 @@ function drawGrid() {{
 
 function drawTasks() {{
   const PC={{1:'#00ff9d',2:'#ffd700',3:'#ff2d55'}};
-  for(const t of tasks) {{
-    const x=gx(t.x),y=gy(t.y),c=PC[t.pri];
-    t.age++;
-    if(t.sparkle>0) {{
-      t.sparkle--;
-      ctx.strokeStyle=c;ctx.globalAlpha=t.sparkle/20;ctx.lineWidth=2;
-      ctx.beginPath();ctx.arc(x,y,(20-t.sparkle/20*20)+5,0,Math.PI*2);ctx.stroke();
-      ctx.globalAlpha=1;
-    }}
+  for(const t of TASKS) {{
+    const x=gx(t.x),y=gy(t.y),c=PC[t.priority]||'#00d4ff';
     const p=0.5+0.5*Math.sin(Date.now()*.003+t.id);
     const s=cW*.55;
-    ctx.shadowBlur=8+p*6;ctx.shadowColor=c;
-    ctx.fillStyle=c;ctx.globalAlpha=.15+p*.05;
-    ctx.fillRect(x-s/2,y-s/2,s,s);ctx.globalAlpha=1;ctx.shadowBlur=0;
-    ctx.strokeStyle=c;ctx.lineWidth=1.5;ctx.globalAlpha=.8;
-    ctx.strokeRect(x-s/2,y-s/2,s,s);ctx.globalAlpha=1;
-    ctx.fillStyle=c;ctx.font=`bold ${{cW*.35}}px Rajdhani`;
-    ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(`P${{t.pri}}`,x,y);
-    ctx.fillStyle='rgba(255,255,255,0.3)';ctx.font=`${{cW*.2}}px Share Tech Mono`;
+    ctx.shadowBlur=8+p*6; ctx.shadowColor=c;
+    ctx.fillStyle=c; ctx.globalAlpha=.15+p*.05;
+    ctx.fillRect(x-s/2,y-s/2,s,s); ctx.globalAlpha=1; ctx.shadowBlur=0;
+    ctx.strokeStyle=c; ctx.lineWidth=1.5; ctx.globalAlpha=.8;
+    ctx.strokeRect(x-s/2,y-s/2,s,s); ctx.globalAlpha=1;
+    ctx.fillStyle=c; ctx.font=`bold ${{cW*.35}}px Rajdhani`;
+    ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(`P${{t.priority}}`,x,y);
+    ctx.fillStyle='rgba(255,255,255,0.3)'; ctx.font=`${{cW*.2}}px Share Tech Mono`;
     ctx.fillText(`T${{t.id}}`,x,y+s/2+8);
   }}
 }}
 
 function drawTrails() {{
-  for(const a of agvs) {{
+  for(const a of vis) {{
     if(a.failed||a.trail.length<2) continue;
-    const c=a.icp?'#ff7b00':'#00d4ff';
+    const c=a.intercept?'#ff7b00':'#00d4ff';
     for(let i=1;i<a.trail.length;i++) {{
-      ctx.strokeStyle=c;ctx.globalAlpha=(i/a.trail.length)*.4;ctx.lineWidth=1.5;
-      ctx.beginPath();ctx.moveTo(gx(a.trail[i-1].x),gy(a.trail[i-1].y));
-      ctx.lineTo(gx(a.trail[i].x),gy(a.trail[i].y));ctx.stroke();
+      ctx.strokeStyle=c; ctx.globalAlpha=(i/a.trail.length)*.4; ctx.lineWidth=1.5;
+      ctx.beginPath();
+      ctx.moveTo(gx(a.trail[i-1].x),gy(a.trail[i-1].y));
+      ctx.lineTo(gx(a.trail[i].x),  gy(a.trail[i].y)); ctx.stroke();
     }}
     ctx.globalAlpha=1;
   }}
 }}
 
 function drawLines() {{
-  for(const a of agvs) {{
-    if(!a.task||a.failed) continue;
-    const ax=gx(a.x),ay=gy(a.y),bx=gx(a.task.x),by=gy(a.task.y);
-    const c=a.icp?'#ff7b00':'rgba(0,212,255,0.25)';
-    ctx.strokeStyle=c;ctx.setLineDash([4,6]);
-    ctx.lineWidth=a.icp?1.5:1;ctx.globalAlpha=a.icp?.8:.5;
-    ctx.beginPath();ctx.moveTo(ax,ay);ctx.lineTo(bx,by);ctx.stroke();
-    ctx.setLineDash([]);ctx.globalAlpha=1;
+  for(const a of vis) {{
+    if(!a.task_id||a.failed) continue;
+    const t=taskMap[a.task_id]; if(!t) continue;
+    const ax=gx(a.vx),ay=gy(a.vy),bx=gx(t.x),by=gy(t.y);
+    const c=a.intercept?'#ff7b00':'rgba(0,212,255,0.25)';
+    ctx.strokeStyle=c; ctx.setLineDash([4,6]); ctx.lineWidth=a.intercept?1.5:1; ctx.globalAlpha=.6;
+    ctx.beginPath(); ctx.moveTo(ax,ay); ctx.lineTo(bx,by); ctx.stroke();
+    ctx.setLineDash([]); ctx.globalAlpha=1;
     const ang=Math.atan2(by-ay,bx-ax),mx=(ax+bx)/2,my=(ay+by)/2;
-    ctx.fillStyle=c;ctx.globalAlpha=.7;
-    ctx.save();ctx.translate(mx,my);ctx.rotate(ang);
-    ctx.beginPath();ctx.moveTo(5,0);ctx.lineTo(-4,4);ctx.lineTo(-4,-4);
-    ctx.closePath();ctx.fill();ctx.restore();ctx.globalAlpha=1;
+    ctx.fillStyle=c; ctx.globalAlpha=.7; ctx.save();
+    ctx.translate(mx,my); ctx.rotate(ang);
+    ctx.beginPath(); ctx.moveTo(5,0); ctx.lineTo(-4,4); ctx.lineTo(-4,-4);
+    ctx.closePath(); ctx.fill(); ctx.restore(); ctx.globalAlpha=1;
   }}
 }}
 
 function drawAGVs() {{
   const R=cW*.55;
-  for(const a of agvs) {{
-    const x=gx(a.x),y=gy(a.y);
-    if(a.flash>0) a.flash--;
+  for(const a of vis) {{
+    const x=gx(a.vx),y=gy(a.vy);
     let c,ring;
-    if     (a.failed)  {{c='#ff2d55';ring='rgba(255,45,85,0.3)';}}
-    else if(a.icp)     {{c='#ff7b00';ring='rgba(255,123,0,0.3)';}}
-    else if(a.task)    {{c='#00d4ff';ring='rgba(0,212,255,0.2)';}}
-    else if(a.bat<30)  {{c='#ffd700';ring='rgba(255,215,0,0.2)';}}
-    else               {{c='#00ff9d';ring='rgba(0,255,157,0.15)';}}
+    const st=a.status||'idle';
+    if(st==='failed')       {{c='#ff2d55';ring='rgba(255,45,85,0.3)';}}
+    else if(st==='intercepting'){{c='#ff7b00';ring='rgba(255,123,0,0.3)';}}
+    else if(st==='working') {{c='#00d4ff';ring='rgba(0,212,255,0.2)';}}
+    else if(st==='charging'){{c='#ffd700';ring='rgba(255,215,0,0.2)';}}
+    else                    {{c='#00ff9d';ring='rgba(0,255,157,0.15)';}}
     const p=0.5+0.5*Math.sin(Date.now()*.004+a.id*.7);
-    ctx.beginPath();ctx.arc(x,y,R*(1.4+p*.3),0,Math.PI*2);ctx.fillStyle=ring;ctx.fill();
-    ctx.shadowBlur=a.failed?20:12;ctx.shadowColor=c;
-    ctx.beginPath();ctx.arc(x,y,R,0,Math.PI*2);ctx.fillStyle=c+'22';ctx.fill();
-    ctx.strokeStyle=c;ctx.lineWidth=2;ctx.stroke();ctx.shadowBlur=0;
-    ctx.beginPath();ctx.arc(x,y,R*.35,0,Math.PI*2);ctx.fillStyle=c;ctx.fill();
-    ctx.fillStyle=a.failed?'#ff2d55':'#fff';ctx.font=`bold ${{R*.65}}px Rajdhani`;
-    ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(a.id,x,y);
+    ctx.beginPath(); ctx.arc(x,y,R*(1.4+p*.3),0,Math.PI*2); ctx.fillStyle=ring; ctx.fill();
+    ctx.shadowBlur=st==='failed'?20:12; ctx.shadowColor=c;
+    ctx.beginPath(); ctx.arc(x,y,R,0,Math.PI*2); ctx.fillStyle=c+'22'; ctx.fill();
+    ctx.strokeStyle=c; ctx.lineWidth=2; ctx.stroke(); ctx.shadowBlur=0;
+    ctx.beginPath(); ctx.arc(x,y,R*.35,0,Math.PI*2); ctx.fillStyle=c; ctx.fill();
+    ctx.fillStyle=st==='failed'?'#ff2d55':'#fff';
+    ctx.font=`bold ${{R*.65}}px Rajdhani`; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText(a.id,x,y);
+    // Battery bar
     const bw=R*1.8;
-    ctx.fillStyle='#0a1f35';ctx.fillRect(x-bw/2,y+R+3,bw,3);
-    const bc=a.bat>50?'#00ff9d':a.bat>20?'#ffd700':'#ff2d55';
-    ctx.fillStyle=bc;ctx.fillRect(x-bw/2,y+R+3,bw*(a.bat/100),3);
-    if(a.failed) {{
-      ctx.strokeStyle='#ff2d55';ctx.lineWidth=2;const q=R*.5;
-      ctx.beginPath();ctx.moveTo(x-q,y-q);ctx.lineTo(x+q,y+q);ctx.stroke();
-      ctx.beginPath();ctx.moveTo(x+q,y-q);ctx.lineTo(x-q,y+q);ctx.stroke();
+    ctx.fillStyle='#0a1f35'; ctx.fillRect(x-bw/2,y+R+3,bw,3);
+    const bc=a.battery>50?'#00ff9d':a.battery>20?'#ffd700':'#ff2d55';
+    ctx.fillStyle=bc; ctx.fillRect(x-bw/2,y+R+3,bw*(a.battery/100),3);
+    if(st==='failed') {{
+      ctx.strokeStyle='#ff2d55'; ctx.lineWidth=2; const q=R*.5;
+      ctx.beginPath(); ctx.moveTo(x-q,y-q); ctx.lineTo(x+q,y+q); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x+q,y-q); ctx.lineTo(x-q,y+q); ctx.stroke();
     }}
-    if(a.icp&&!a.failed) {{
-      ctx.fillStyle='#ff7b00';ctx.font=`${{R*.7}}px Rajdhani`;
-      ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('⚡',x+R+4,y-R);
+    if(a.intercept) {{
+      ctx.fillStyle='#ff7b00'; ctx.font=`${{R*.7}}px Rajdhani`;
+      ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText('⚡',x+R+4,y-R);
     }}
   }}
 }}
 
-function frame(ts) {{
-  if(!running){{lastTime=ts;requestAnimationFrame(frame);return;}}
-  const dt=ts-lastTime;lastTime=ts;
-  stepAccum+=dt;
-  if(stepAccum>=STEP_MS/speed) {{
-    stepAccum=0; step(); updateSB(); sync();
-  }}
-  ctx.clearRect(0,0,cw,ch);
-  const g=ctx.createRadialGradient(cw/2,ch/2,0,cw/2,ch/2,Math.max(cw,ch)/2);
-  g.addColorStop(0,'#020c18');g.addColorStop(1,'#010810');
-  ctx.fillStyle=g;ctx.fillRect(0,0,cw,ch);
-  drawGrid();drawTrails();drawLines();drawTasks();drawAGVs();
-  requestAnimationFrame(frame);
-}}
+function updateSidebar() {{
+  document.getElementById('s0').textContent = vis.filter(a=>a.status==='working'||a.status==='intercepting').length;
+  document.getElementById('s1').textContent = vis.filter(a=>a.failed).length;
+  document.getElementById('s2').textContent = vis.filter(a=>a.status==='intercepting').length;
+  document.getElementById('s3').textContent = TASKS.length;
+  document.getElementById('s4').textContent = {st.session_state.completed_count};
+  document.getElementById('s5').textContent = {st.session_state.step_count};
 
-// ── Sidebar ───────────────────────────────────────────────────────
-function updateSB() {{
-  document.getElementById('s0').textContent=agvs.filter(a=>!a.failed&&a.task).length;
-  document.getElementById('s1').textContent=agvs.filter(a=>a.failed).length;
-  document.getElementById('s2').textContent=agvs.filter(a=>a.icp&&!a.failed).length;
-  document.getElementById('s3').textContent=tasks.length;
-  document.getElementById('s4').textContent=completedCount;
-  document.getElementById('s5').textContent=stepCount;
-  document.getElementById('al').innerHTML=agvs.map(a=>{{
+  document.getElementById('al').innerHTML = vis.map(a => {{
+    const st=a.status||'idle';
     let cls='ac',dot='#00ff9d',lbl='IDLE';
-    if(a.failed){{cls+=' failed';dot='#ff2d55';lbl='FAIL';}}
-    else if(a.icp){{cls+=' intercepting';dot='#ff7b00';lbl='ICP';}}
-    else if(a.task){{cls+=' working';dot='#00d4ff';lbl='WORK';}}
-    else if(a.bat<30){{cls+=' charging';dot='#ffd700';lbl='CHG';}}
-    const bc=a.bat>50?'#00ff9d':a.bat>20?'#ffd700':'#ff2d55';
-    const info=a.failed?`<div class="an" style="color:#ff2d55">⚠️${{a.fault}}</div>`
-      :a.icp?`<div class="an hl">⚡${{a.icp}}</div>`
-      :a.task?`<div class="an">T-${{a.task.id}} (${{a.x.toFixed(1)}},${{a.y.toFixed(1)}})</div>`
-      :`<div class="an">Done:${{a.done}}</div>`;
-    return `<div class="${{cls}}">
-      <div class="ar">
-        <span class="ai"><span class="dot" style="background:${{dot}}"></span>AGV-${{String(a.id).padStart(3,'0')}}</span>
-        <span style="font-size:8px;color:${{dot}}">${{lbl}}</span>
-      </div>
-      <div class="bb"><div class="bf" style="width:${{a.bat}}%;background:${{bc}}"></div></div>
+    if(st==='failed')       {{cls+=' failed';dot='#ff2d55';lbl='FAIL';}}
+    else if(st==='intercepting'){{cls+=' intercepting';dot='#ff7b00';lbl='ICP';}}
+    else if(st==='working') {{cls+=' working';dot='#00d4ff';lbl='WORK';}}
+    else if(st==='charging'){{cls+=' charging';dot='#ffd700';lbl='CHG';}}
+    const bc=a.battery>50?'#00ff9d':a.battery>20?'#ffd700':'#ff2d55';
+    const info=a.failed
+      ?`<div class="an" style="color:#ff2d55">⚠️${{a.fault_type||''}}</div>`
+      :a.intercept?`<div class="an hl">⚡${{a.intercept}}</div>`
+      :a.task_id!=null?`<div class="an">→ T-${{a.task_id}} (${{a.vx.toFixed(1)}},${{a.vy.toFixed(1)}})</div>`
+      :`<div class="an">Done: ${{a.tasks_done}}</div>`;
+    return `<div class="${{cls}}"><div class="ar">
+      <span class="ai"><span class="dot" style="background:${{dot}}"></span>AGV-${{String(a.id).padStart(3,'0')}}</span>
+      <span style="font-size:8px;color:${{dot}}">${{lbl}}</span></div>
+      <div class="bb"><div class="bf" style="width:${{a.battery}}%;background:${{bc}}"></div></div>
       <div class="ar" style="margin-top:2px">
-        <span style="font-size:8px;color:#3a6a8a">🔋${{a.bat.toFixed(0)}}%</span>
-        <span style="font-size:8px;color:#3a6a8a">(${{a.x.toFixed(0)}},${{a.y.toFixed(0)}})</span>
+        <span style="font-size:8px;color:#3a6a8a">🔋${{a.battery.toFixed(0)}}%</span>
+        <span style="font-size:8px;color:#3a6a8a">(${{a.vx.toFixed(0)}},${{a.vy.toFixed(0)}})</span>
       </div>${{info}}</div>`;
   }}).join('');
 }}
 
-function renderLog() {{
-  document.getElementById('lp').innerHTML=logs.slice(0,60).map(l=>
-    `<div class="le ${{l.type}}"><span style="color:#1a4a6a">[${{l.ts}}]</span> ${{l.msg}}</div>`
-  ).join('');
+function frame(ts) {{
+  const dt = Math.min(ts - lastTime, 100) / 1000;
+  lastTime = ts;
+
+  // Smooth interpolation toward Python target positions
+  for(const a of vis) {{
+    const speed = 4.0;
+    a.vx += (a.tx - a.vx) * Math.min(1, speed * dt);
+    a.vy += (a.ty - a.vy) * Math.min(1, speed * dt);
+    a.trail.push({{x:a.vx, y:a.vy}});
+    if(a.trail.length > 30) a.trail.shift();
+  }}
+
+  ctx.clearRect(0,0,cw,ch);
+  const g=ctx.createRadialGradient(cw/2,ch/2,0,cw/2,ch/2,Math.max(cw,ch)/2);
+  g.addColorStop(0,'#020c18'); g.addColorStop(1,'#010810');
+  ctx.fillStyle=g; ctx.fillRect(0,0,cw,ch);
+  drawGrid(); drawTrails(); drawLines(); drawTasks(); drawAGVs();
+  requestAnimationFrame(frame);
 }}
 
-// ── Controls ──────────────────────────────────────────────────────
-document.getElementById('bpause').addEventListener('click',function(){{
-  running=!running;this.textContent=running?'⏸':'▶';this.classList.toggle('on',running);
-}});
-document.getElementById('bfault').addEventListener('click',()=>{{
-  const a=agvs.filter(x=>!x.failed);
-  if(a.length) fault(a[Math.floor(Math.random()*a.length)]);
-}});
-document.getElementById('breset').addEventListener('click',()=>{{
-  completedCount=0;stepCount=0;pendingLogs=[];logs=[];
-  agvs=INIT_AGVS.map(mkAGV);tasks=INIT_TASKS.map(mkTask);
-  log('🔄 Reset','assign');assign();updateSB();
-}});
-document.getElementById('spd').addEventListener('input',function(){{
-  speed=+this.value;document.getElementById('spl').textContent=speed+'x';
-}});
-
-// ── Tooltip ───────────────────────────────────────────────────────
-canvas.addEventListener('mousemove',e=>{{
+// Tooltip
+canvas.addEventListener('mousemove', e => {{
   const r=canvas.getBoundingClientRect();
   const wx=((e.clientX-r.left)*(cw/r.width)-px0)/cW;
   const wy=((e.clientY-r.top)*(ch/r.height)-py0)/cH;
   const tt=document.getElementById('tt');
   let f=null;
-  for(const a of agvs) if(dist({{x:wx,y:wy}},a)<1.2){{f={{t:'a',d:a}};break;}}
-  if(!f) for(const t of tasks) if(dist({{x:wx,y:wy}},t)<0.8){{f={{t:'t',d:t}};break;}}
-  if(f){{
+  for(const a of vis) if(Math.sqrt((a.vx-wx)**2+(a.vy-wy)**2)<1.2) {{f={{t:'a',d:a}};break;}}
+  if(!f) for(const t of TASKS) if(Math.sqrt((t.x-wx)**2+(t.y-wy)**2)<0.8) {{f={{t:'t',d:t}};break;}}
+  if(f) {{
     const d=f.d;
     tt.innerHTML=f.t==='a'
-      ?`AGV-${{String(d.id).padStart(3,'0')}}<br>🔋${{d.bat.toFixed(1)}}%<br>${{d.failed?d.fault:d.icp?'ICP':d.task?'WORK':'IDLE'}}<br>Done:${{d.done}}`
-      :`T-${{d.id}} P${{d.pri}}<br>${{d.asgn!=null?'AGV-'+String(d.asgn).padStart(3,'0'):'Unassigned'}}`;
+      ?`AGV-${{String(d.id).padStart(3,'0')}}<br>🔋${{d.battery.toFixed(1)}}%<br>${{d.status||'idle'}}<br>Done:${{d.tasks_done}}`
+      :`T-${{d.id}} P${{d.priority}}<br>${{d.assigned_to!=null?'AGV-'+String(d.assigned_to).padStart(3,'0'):'Unassigned'}}`;
     tt.style.cssText=`display:block;left:${{e.clientX+14}}px;top:${{e.clientY-8}}px`;
   }} else tt.style.display='none';
 }});
 canvas.addEventListener('mouseleave',()=>document.getElementById('tt').style.display='none');
 
-// ── Boot ──────────────────────────────────────────────────────────
-window.addEventListener('resize',resize);
-resize(); assign(); updateSB();
-log('🚀 Live map started','assign');
-stReady();   // Tell Streamlit we are ready
+window.addEventListener('resize', resize);
+resize();
+updateSidebar();
 requestAnimationFrame(frame);
 </script></body></html>"""
-
 
 # ======================================
 # 🖥️ HEADER
@@ -695,7 +629,7 @@ st.markdown("""
 <div class="main-header">
   <h1 style="margin:0;font-size:2.5rem;font-weight:700;">🤖 AGV Fleet Management System</h1>
   <p style="margin:10px 0 0 0;font-size:1.1rem;opacity:.9;">
-    Live Map → Streamlit Dashboard &nbsp;·&nbsp; Real-time Fleet Operations
+    Python Simulation Engine → Live Canvas Visualization
   </p>
 </div>
 """, unsafe_allow_html=True)
@@ -718,10 +652,33 @@ with st.sidebar:
         st.rerun()
 
     st.markdown("<div class='control-section'>", unsafe_allow_html=True)
+    st.markdown("### ⚙️ Simulation Controls")
+
+    sim_running = st.toggle("▶ Auto-simulate", value=st.session_state.get("sim_running", True), key="sim_toggle")
+    st.session_state.sim_running = sim_running
+
+    speed = st.slider("Steps per cycle", 1, 10, 3, key="sim_speed")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("⚡ Force Fault", use_container_width=True):
+            alive = [a for a in st.session_state.agvs if not a["failed"]]
+            if alive:
+                trigger_fault(random.choice(alive))
+            st.rerun()
+    with col2:
+        if st.button("🔄 Reset All", use_container_width=True):
+            init_fleet()
+            assign_tasks()
+            st.rerun()
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown("<div class='control-section'>", unsafe_allow_html=True)
     st.markdown("### 📊 Live Fleet Status")
-    agvs_now = st.session_state.live_agvs
-    c1,c2 = st.columns(2)
-    c1.metric("🟢 Active",    sum(1 for a in agvs_now if not a["failed"] and a.get("taskId") is not None))
+    agvs_now = st.session_state.agvs
+    c1, c2 = st.columns(2)
+    c1.metric("🟢 Active",    sum(1 for a in agvs_now if a["task_id"] is not None and not a["failed"]))
     c2.metric("🔴 Failed",    sum(1 for a in agvs_now if a["failed"]))
     c1.metric("⚡ Intercept", sum(1 for a in agvs_now if a.get("intercept") and not a["failed"]))
     c2.metric("✅ Done",      st.session_state.completed_count)
@@ -730,7 +687,7 @@ with st.sidebar:
         lk = st.session_state.kpi_history[-1]
         av = lk["availability"]
         color = "#10b981" if av>=90 else "#f59e0b" if av>=70 else "#ef4444"
-        label = "Excellent"  if av>=90 else "Good"    if av>=70 else "Critical"
+        label = "Excellent" if av>=90 else "Good" if av>=70 else "Critical"
         st.markdown(f"""
         <div style="text-align:center;padding:14px;background:white;border-radius:12px;margin-top:10px;">
           <div style="font-size:24px;font-weight:bold;color:{color};">{av:.1f}%</div>
@@ -740,27 +697,18 @@ with st.sidebar:
         </div>""", unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
-    st.markdown("<div class='control-section'>", unsafe_allow_html=True)
-    st.markdown("### ℹ️ Architecture")
-    st.markdown("""
-**Live Map** is the simulation engine.
-
-Uses Streamlit's **component value protocol** to push state every 2 s:
-- AGV positions & battery
-- Fault & takeover events  
-- Task completions
-
-All tabs update from live data. No Python simulation loop.
-    """)
-    st.markdown("</div>", unsafe_allow_html=True)
+# ── Run simulation steps BEFORE rendering ──
+if st.session_state.sim_running:
+    for _ in range(speed):
+        sim_step()
 
 # KPI banner
 if st.session_state.kpi_history:
     lk = st.session_state.kpi_history[-1]
     av = lk["availability"]
-    if av>=90:
+    if av >= 90:
         st.markdown(f'<div class="status-card success-alert"><strong>🟢 Excellent</strong> · Availability {av:.1f}% · Step {lk["step"]}</div>', unsafe_allow_html=True)
-    elif av>=70:
+    elif av >= 70:
         st.markdown(f'<div class="status-card warning-alert"><strong>🟡 Good</strong> · Availability {av:.1f}% · Step {lk["step"]}</div>', unsafe_allow_html=True)
     else:
         st.markdown(f'<div class="status-card critical-alert"><strong>🔴 Critical</strong> · Availability {av:.1f}% · Step {lk["step"]}</div>', unsafe_allow_html=True)
@@ -771,41 +719,40 @@ if st.session_state.kpi_history:
 tab1, tab2, tab3, tab4, tab5 = st.tabs(
     ["📊 Dashboard", "🤖 Fleet Status", "🗺️ Live Map", "📜 Event Log", "📈 Analytics"])
 
-# ── TAB 1 ────────────────────────────────────────────────────────
 with tab1:
     st.markdown("### 📊 Real-time Performance Dashboard")
     kh = st.session_state.kpi_history
     if kh:
         lk=kh[-1]; pk=kh[-2] if len(kh)>1 else lk
-        c1,c2,c3,c4,c5 = st.columns(5)
-        c1.metric("🎯 Availability",  f"{lk['availability']:.1f}%",  f"{lk['availability']-pk['availability']:.1f}%")
-        c2.metric("🔋 Avg Battery",   f"{lk['avgbattery']:.1f}%",   f"{lk['avgbattery']-pk['avgbattery']:.1f}%")
-        c3.metric("🌐 Network",       f"{lk['networkhealth']:.0f}%",f"{lk['networkhealth']-pk['networkhealth']:.1f}%")
-        c4.metric("📋 Pending",       lk['pendingtasks'],            int(lk['pendingtasks']-pk['pendingtasks']), delta_color="inverse")
-        c5.metric("⚡ Utilization",   f"{lk['utilization']:.1f}%",  f"{lk['utilization']-pk['utilization']:.1f}%")
+        c1,c2,c3,c4,c5=st.columns(5)
+        c1.metric("🎯 Availability", f"{lk['availability']:.1f}%",  f"{lk['availability']-pk['availability']:.1f}%")
+        c2.metric("🔋 Avg Battery",  f"{lk['avgbattery']:.1f}%",   f"{lk['avgbattery']-pk['avgbattery']:.1f}%")
+        c3.metric("🌐 Network",      f"{lk['networkhealth']:.0f}%", f"{lk['networkhealth']-pk['networkhealth']:.1f}%")
+        c4.metric("📋 Pending",      lk['pendingtasks'],            int(lk['pendingtasks']-pk['pendingtasks']), delta_color="inverse")
+        c5.metric("⚡ Utilization",  f"{lk['utilization']:.1f}%",  f"{lk['utilization']-pk['utilization']:.1f}%")
 
-    if len(kh)>2:
+    if len(kh) > 2:
         st.markdown("### 📈 Performance Trends")
-        df=pd.DataFrame(kh)
-        fig=make_subplots(rows=2,cols=3,
+        df = pd.DataFrame(kh)
+        fig = make_subplots(rows=2, cols=3,
             subplot_titles=("🎯 Availability","⚡ Utilization","✅ Efficiency",
                             "🌐 Network","🔋 Battery","📋 Pending"),
-            vertical_spacing=0.12,horizontal_spacing=0.08)
-        kw=dict(mode="lines+markers",marker=dict(size=5))
-        fig.add_trace(go.Scatter(x=df.step,y=df.availability, line=dict(color='#10b981',width=2),**kw),row=1,col=1)
-        fig.add_trace(go.Scatter(x=df.step,y=df.utilization,  line=dict(color='#f59e0b',width=2),**kw),row=1,col=2)
-        fig.add_trace(go.Scatter(x=df.step,y=df.efficiency,   line=dict(color='#3b82f6',width=2),**kw),row=2,col=1)
-        fig.add_trace(go.Scatter(x=df.step,y=df.networkhealth,line=dict(color='#8b5cf6',width=2),**kw),row=2,col=2)
-        fig.add_trace(go.Scatter(x=df.step,y=df.avgbattery,   line=dict(color='#06b6d4',width=2),**kw),row=2,col=3)
-        fig.add_trace(go.Bar(x=df.step,y=df.pendingtasks,marker=dict(color='#ef4444',opacity=0.7)),row=1,col=3)
-        fig.update_layout(height=550,showlegend=False,plot_bgcolor='white',paper_bgcolor='white')
-        fig.update_xaxes(showgrid=True,gridwidth=1,gridcolor='#e2e8f0')
-        fig.update_yaxes(showgrid=True,gridwidth=1,gridcolor='#e2e8f0')
-        st.plotly_chart(fig,use_container_width=True)
+            vertical_spacing=0.12, horizontal_spacing=0.08)
+        kw = dict(mode="lines+markers", marker=dict(size=5))
+        fig.add_trace(go.Scatter(x=df.step, y=df.availability,  line=dict(color='#10b981',width=2),**kw),row=1,col=1)
+        fig.add_trace(go.Scatter(x=df.step, y=df.utilization,   line=dict(color='#f59e0b',width=2),**kw),row=1,col=2)
+        fig.add_trace(go.Scatter(x=df.step, y=df.efficiency,    line=dict(color='#3b82f6',width=2),**kw),row=2,col=1)
+        fig.add_trace(go.Scatter(x=df.step, y=df.networkhealth, line=dict(color='#8b5cf6',width=2),**kw),row=2,col=2)
+        fig.add_trace(go.Scatter(x=df.step, y=df.avgbattery,    line=dict(color='#06b6d4',width=2),**kw),row=2,col=3)
+        fig.add_trace(go.Bar(x=df.step, y=df.pendingtasks, marker=dict(color='#ef4444',opacity=0.7)),row=1,col=3)
+        fig.update_layout(height=550, showlegend=False, plot_bgcolor='white', paper_bgcolor='white')
+        fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='#e2e8f0')
+        fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='#e2e8f0')
+        st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("### 🏥 System Health")
-    c1,c2,c3=st.columns(3)
-    an=st.session_state.live_agvs
+    c1,c2,c3 = st.columns(3)
+    an = st.session_state.agvs
     with c1:
         ok=sum(1 for a in an if not a["failed"]); hs=ok/len(an)*100 if an else 0
         cl="perf-excellent" if hs>=90 else "perf-good" if hs>=70 else "perf-warning" if hs>=50 else "perf-critical"
@@ -816,29 +763,28 @@ with tab1:
         cl="perf-excellent" if ab>=70 else "perf-good" if ab>=40 else "perf-warning" if ab>=20 else "perf-critical"
         st.markdown(f'<div class="perf-indicator {cl}">{"🔋" if ab>=40 else "🪫"} <strong>Battery:</strong> {ab:.1f}%</div>',unsafe_allow_html=True)
     with c3:
-        ut=sum(1 for a in an if a.get("taskId") is not None and not a["failed"])/len(an)*100 if an else 0
+        ut=sum(1 for a in an if a["task_id"] is not None and not a["failed"])/len(an)*100 if an else 0
         cl="perf-excellent" if ut>=80 else "perf-good" if ut>=60 else "perf-warning" if ut>=30 else "perf-critical"
         st.markdown(f'<div class="perf-indicator {cl}">{"📈" if ut>=60 else "📉"} <strong>Utilization:</strong> {ut:.1f}%</div>',unsafe_allow_html=True)
 
-# ── TAB 2 ────────────────────────────────────────────────────────
 with tab2:
-    st.markdown("### 🤖 Fleet Status — Driven by Live Map")
-    an=st.session_state.live_agvs
-    c1,c2,c3,c4=st.columns(4)
-    c1.metric("🟢 Idle",    sum(1 for a in an if not a["failed"] and a.get("taskId") is None))
-    c2.metric("🔵 Working", sum(1 for a in an if not a["failed"] and a.get("taskId") is not None))
+    st.markdown("### 🤖 Fleet Status")
+    an = st.session_state.agvs
+    c1,c2,c3,c4 = st.columns(4)
+    c1.metric("🟢 Idle",    sum(1 for a in an if not a["failed"] and a["task_id"] is None))
+    c2.metric("🔵 Working", sum(1 for a in an if not a["failed"] and a["task_id"] is not None))
     c3.metric("🔴 Failed",  sum(1 for a in an if a["failed"]))
-    c4.metric("🟡 Low",     sum(1 for a in an if a["battery"]<30 and not a["failed"]))
+    c4.metric("🟡 Low Bat", sum(1 for a in an if a["battery"]<30 and not a["failed"]))
 
     for a in an:
-        st_=a.get("status","idle")
-        sm={"idle":"Available","working":"Working","failed":"Failed","charging":"Charging","intercepting":"Intercepting"}
-        sc={"idle":"status-available","working":"status-working","failed":"status-failed",
-            "charging":"status-charging","intercepting":"status-working"}
+        st_ = a.get("status", "idle")
+        sm = {"idle":"Available","working":"Working","failed":"Failed","charging":"Charging","intercepting":"Intercepting"}
+        sc = {"idle":"status-available","working":"status-working","failed":"status-failed",
+              "charging":"status-charging","intercepting":"status-working"}
         sl=sm.get(st_,st_.capitalize()); ss=sc.get(st_,"status-available")
         bc="#ef4444" if a["battery"]<30 else "#10b981"
         with st.container():
-            col1,col2,col3,col4=st.columns([2,2,2,4])
+            col1,col2,col3,col4 = st.columns([2,2,2,4])
             with col1:
                 st.markdown(f"""<div class="fleet-card">
                   <h4 style="margin:0;color:#1e293b;">AGV-{a['id']:03d}</h4>
@@ -849,49 +795,39 @@ with tab2:
                   <div style="color:{bc};font-size:22px;font-weight:bold;">🔋{a['battery']:.1f}%</div>
                   <p style="margin:0;color:#64748b;font-size:12px;">Battery</p></div>""",unsafe_allow_html=True)
             with col3:
-                tl=f"T-{a['taskId']}" if a.get("taskId") is not None else "None"
+                tl=f"T-{a['task_id']}" if a["task_id"] is not None else "None"
                 st.markdown(f"""<div class="fleet-card">
                   <div style="font-size:18px;font-weight:bold;color:#3b82f6;">📋{tl}</div>
                   <p style="margin:0;color:#64748b;font-size:12px;">Task</p></div>""",unsafe_allow_html=True)
             with col4:
-                if a["failed"]:          st.error(f"⚠️ {a.get('faultType','Unknown')}")
-                elif a.get("intercept"): st.warning(f"⚡ {a['intercept']}")
-                else:                    st.write(f"Tasks done: **{a.get('tasksDone',0)}**")
+                if a["failed"]:                 st.error(f"⚠️ {a.get('fault_type','Unknown')}")
+                elif a.get("intercept"):        st.warning(f"⚡ {a['intercept']}")
+                else:                           st.write(f"Tasks done: **{a.get('tasks_done',0)}**")
 
-# ── TAB 3  — THE LIVE MAP (source of truth) ──────────────────────
 with tab3:
-    st.markdown("### 🗺️ Live Digital Twin — Source of Truth")
+    st.markdown("### 🗺️ Live Digital Twin")
+    # Serialize current Python state for the map
+    agv_data = [{"id":a["id"],"x":a["x"],"y":a["y"],"battery":a["battery"],
+                 "failed":a["failed"],"fault_type":a.get("fault_type"),
+                 "intercept":a.get("intercept"),"task_id":a["task_id"],
+                 "tasks_done":a.get("tasks_done",0),"status":a.get("status","idle")}
+                for a in st.session_state.agvs]
+    task_data = [{"id":t["id"],"x":t["x"],"y":t["y"],"priority":t["priority"],
+                  "assigned_to":t["assigned_to"],"completed":t["completed"]}
+                 for t in st.session_state.tasks]
+    components.html(build_map_html(agv_data, task_data, GRID), height=720, scrolling=False)
+    st.caption(f"🐍 Python simulation · Step {st.session_state.step_count} · "
+               f"Completed {st.session_state.completed_count} tasks · Auto-reruns every cycle")
 
-    # ✅ Use components.html with return_value=True
-    # The map calls stSend(payload) which triggers setComponentValue
-    # Streamlit returns that value here as `map_data`
-    live_html = build_live_map_html(
-        st.session_state.live_agvs,
-        st.session_state.live_tasks,
-        GRIDSIZE
-    )
-    map_data = components.html(live_html, height=730, scrolling=False)
-
-    # `map_data` will be None until the map posts its first value,
-    # then it will be the dict the map sent via stSend()
-    if map_data and isinstance(map_data, dict):
-        ingest(map_data)
-        st.rerun()
-
-    st.caption("⬆ Map uses Streamlit's component protocol to push state every 2 s → all tabs update.")
-
-# ── TAB 4 ────────────────────────────────────────────────────────
 with tab4:
-    st.markdown("### 📜 Live Event Log — from Map")
-    ll=st.session_state.live_logs
-    c1,c2=st.columns([3,1])
+    st.markdown("### 📜 Event Log")
+    ll = st.session_state.event_log
+    c1,c2 = st.columns([3,1])
     with c1: flt=st.selectbox("Filter",["All","🚨 Faults","✅ Completions","⚡ Takeovers","🔄 Recoveries"])
     with c2: mx=st.number_input("Max",10,200,50)
-
     tm={"🚨 Faults":"fault","✅ Completions":"complete","⚡ Takeovers":"takeover","🔄 Recoveries":"recover"}
     fil=([l for l in ll if l.get("type")==tm[flt]] if flt in tm else ll)[:mx]
     cm={"fault":"#ef4444","takeover":"#f97316","complete":"#10b981","recover":"#9b59b6","assign":"#3b82f6"}
-
     st.markdown("<div class='log-container'>",unsafe_allow_html=True)
     for e in fil:
         ec=cm.get(e.get("type","assign"),"#64748b")
@@ -901,7 +837,6 @@ with tab4:
             f'<span style="color:{ec};">●</span> {e.get("msg","")}</div>',
             unsafe_allow_html=True)
     st.markdown("</div>",unsafe_allow_html=True)
-
     st.divider()
     c1,c2,c3,c4=st.columns(4)
     c1.metric("🚨 Faults",     sum(1 for l in ll if l.get("type")=="fault"))
@@ -909,19 +844,17 @@ with tab4:
     c3.metric("✅ Completions", sum(1 for l in ll if l.get("type")=="complete"))
     c4.metric("🔄 Recoveries",  sum(1 for l in ll if l.get("type")=="recover"))
 
-# ── TAB 5 ────────────────────────────────────────────────────────
 with tab5:
     st.markdown("### 📈 Advanced Analytics")
-    kh=st.session_state.kpi_history
-    if len(kh)>5:
-        df=pd.DataFrame(kh)
-        c1,c2=st.columns(2)
+    kh = st.session_state.kpi_history
+    if len(kh) > 5:
+        df = pd.DataFrame(kh)
+        c1,c2 = st.columns(2)
         with c1:
             fs=px.scatter(df,x="availability",y="efficiency",size="avgbattery",color="utilization",
                 title="🔍 Availability vs Efficiency",
                 labels={"availability":"Fleet Avail (%)","efficiency":"Task Eff (%)"})
-            fs.update_layout(height=380)
-            st.plotly_chart(fs,use_container_width=True)
+            fs.update_layout(height=380); st.plotly_chart(fs,use_container_width=True)
         with c2:
             r=df.tail(15); cols=["availability","efficiency","avgbattery","networkhealth"]
             fh=go.Figure(go.Heatmap(z=r[cols].values.T,x=r["step"].values,
@@ -929,23 +862,29 @@ with tab5:
                 colorscale="RdYlGn",texttemplate="%{z:.0f}",textfont={"size":9}))
             fh.update_layout(title="🌡️ Health Heatmap",height=380)
             st.plotly_chart(fh,use_container_width=True)
-
         st.markdown("#### 🔮 Predictive Insights")
         ins=[]
         if df.availability.tail(5).mean()<80: ins.append("⚠️ Fleet availability trending down — consider maintenance")
-        if df.avgbattery.tail(5).mean()  <40: ins.append("🔋 Battery critically low — implement charging strategy")
-        if df.efficiency.tail(5).mean()  <60: ins.append("📉 Task efficiency declining — review assignment logic")
+        if df.avgbattery.tail(5).mean()  <40: ins.append("🔋 Battery levels critically low")
+        if df.efficiency.tail(5).mean()  <60: ins.append("📉 Task efficiency declining")
         if df.utilization.tail(5).mean() <50: ins.append("📊 Low utilization — too many idle AGVs")
         if not ins: ins.append("✅ System operating within normal parameters")
         for i in ins: st.info(i)
     else:
-        st.info("📊 Let the map run ~10 seconds to accumulate analytics data.")
+        st.info("📊 Simulation running... analytics appear after a few steps.")
 
-# ── Footer ────────────────────────────────────────────────────────
+# Footer
 st.markdown("---")
-c1,c2,c3,c4=st.columns(4)
+c1,c2,c3,c4 = st.columns(4)
 c1.markdown(f'<div style="text-align:center;padding:12px;"><h4 style="color:#64748b;margin:0;">🕒 Step</h4><div style="font-size:24px;font-weight:bold;color:#1e293b;">{st.session_state.step_count}</div></div>',unsafe_allow_html=True)
 c2.markdown(f'<div style="text-align:center;padding:12px;"><h4 style="color:#64748b;margin:0;">✅ Done</h4><div style="font-size:24px;font-weight:bold;color:#10b981;">{st.session_state.completed_count}</div></div>',unsafe_allow_html=True)
-an=st.session_state.live_agvs
+an = st.session_state.agvs
 c3.markdown(f'<div style="text-align:center;padding:12px;"><h4 style="color:#64748b;margin:0;">🤖 Active/Total</h4><div style="font-size:24px;font-weight:bold;color:#3b82f6;">{sum(1 for a in an if not a["failed"])}/{len(an)}</div></div>',unsafe_allow_html=True)
-c4.markdown(f'<div style="text-align:center;padding:12px;"><h4 style="color:#64748b;margin:0;">📡 Protocol</h4><div style="font-size:16px;font-weight:bold;color:#8b5cf6;">Component Value</div></div>',unsafe_allow_html=True)
+c4.markdown(f'<div style="text-align:center;padding:12px;"><h4 style="color:#64748b;margin:0;">⚡ Fault Rate</h4><div style="font-size:24px;font-weight:bold;color:#8b5cf6;">{FAULT_PROB*100:.0f}%</div></div>',unsafe_allow_html=True)
+
+# ======================================
+# 🔁 AUTO-RERUN (drives the simulation loop)
+# ======================================
+if st.session_state.sim_running:
+    time.sleep(0.5)
+    st.rerun()
