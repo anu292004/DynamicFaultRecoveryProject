@@ -11,16 +11,73 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime
 
-st.set_page_config(
-    page_title="AGV Fleet Manager",
-    page_icon="🤖",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# --- PAGE CONFIGURATION ---
+st.set_page_config(page_title="AGV Fleet Manager | Login", page_icon="🤖", layout="centered")
 
-# ======================================
-# 🔐 FIREBASE AUTH
-# ======================================
+# --- CUSTOM CSS FOR MODERN UI ---
+def apply_custom_css():
+    st.markdown("""
+        <style>
+        /* Center everything and style the background */
+        .block-container {
+            padding-top: 3rem;
+            max-width: 600px;
+        }
+        
+        /* Main Header Styling */
+        .main-header {
+            text-align: center;
+            margin-bottom: 2rem;
+            animation: fadeIn 1s ease-in-out;
+        }
+        .main-header h1 {
+            color: #1E293B;
+            font-size: 2.5rem;
+            font-weight: 800;
+            margin-bottom: 0.5rem;
+        }
+        .main-header p {
+            color: #64748B;
+            font-size: 1.1rem;
+        }
+
+        /* Center and style tabs */
+        .stTabs [data-baseweb="tab-list"] {
+            gap: 2rem;
+            justify-content: center;
+            border-bottom: 2px solid #E2E8F0;
+        }
+        .stTabs [data-baseweb="tab"] {
+            height: 50px;
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: #64748B;
+        }
+        .stTabs [aria-selected="true"] {
+            color: #3B82F6 !important;
+            border-bottom-color: #3B82F6 !important;
+        }
+
+        /* Input field styling adjustments */
+        .stTextInput input {
+            border-radius: 8px;
+            padding: 12px;
+            border: 1px solid #CBD5E1;
+        }
+        .stTextInput input:focus {
+            border-color: #3B82F6;
+            box-shadow: 0 0 0 1px #3B82F6;
+        }
+
+        /* Simple Fade-in Animation */
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
+# --- FIREBASE LOGIC ---
 def firebase_login(email, password, action="login"):
     api_key = st.secrets["FIREBASE_KEY"]
     url = (f"https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={api_key}"
@@ -28,55 +85,79 @@ def firebase_login(email, password, action="login"):
            else f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={api_key}")
     return req.post(url, json={"email": email, "password": password, "returnSecureToken": True}).json()
 
+# --- LOGIN UI ---
 def show_login():
+    apply_custom_css()
+    
+    # Attractive Header
     st.markdown("""
-        <div style='text-align:center;margin-top:60px;margin-bottom:30px'>
-            <h1>🤖➡️📦 AGV FLEET MANAGER</h1>
-            <p style='color:#64748b;'>Sign in to access the dashboard</p>
-        </div>""", unsafe_allow_html=True)
-    col1, col2, col3 = st.columns([1, 1.5, 1])
-    with col2:
+        <div class='main-header'>
+            <h1>🤖➡️📦 AGV FLEET</h1>
+            <p>Sign in to access your fleet dashboard</p>
+        </div>
+    """, unsafe_allow_html=True)
+    
+    # Use a container to create a clean "Card" effect
+    with st.container(border=True):
         tab_login, tab_signup = st.tabs(["🔑 Login", "📝 Sign Up"])
+        
+        # --- LOGIN TAB ---
         with tab_login:
-            email    = st.text_input("Email",    key="login_email",    placeholder="your@email.com")
+            st.write("") # Spacer
+            email    = st.text_input("Email",    key="login_email",    placeholder="admin@fleet.com")
             password = st.text_input("Password", key="login_password", placeholder="••••••••", type="password")
-            if st.button("Login", key="login_btn", use_container_width=True):
+            st.write("") # Spacer
+            
+            # Using type="primary" makes the button pop visually
+            if st.button("Access Dashboard", key="login_btn", type="primary", use_container_width=True):
                 if email and password:
-                    with st.spinner("Signing in..."):
+                    with st.spinner("Authenticating..."):
                         result = firebase_login(email, password, "login")
                     if "idToken" in result:
                         st.session_state.update(user_email=result["email"],
-                                                user_token=result["idToken"], logged_in=True)
+                                                user_token=result["idToken"], 
+                                                logged_in=True)
                         st.rerun()
                     else:
                         msg = result.get("error", {}).get("message", "Login failed")
-                        st.error("❌ Invalid email or password" if "INVALID" in msg else f"❌ {msg}")
+                        st.error("❌ Invalid email or password" if "INVALID" in msg else f"❌ {msg}", icon="🚨")
                 else:
-                    st.warning("⚠️ Please enter email and password")
+                    st.warning("⚠️ Please enter both email and password")
+                    
+        # --- SIGNUP TAB ---
         with tab_signup:
-            ne  = st.text_input("Email",            key="signup_email",    placeholder="your@email.com")
-            np_ = st.text_input("Password",         key="signup_password", placeholder="Min 6 chars", type="password")
-            cp  = st.text_input("Confirm Password", key="confirm_password",                            type="password")
-            if st.button("Create Account", key="signup_btn", use_container_width=True):
+            st.write("") # Spacer
+            ne  = st.text_input("Email",            key="signup_email",    placeholder="newuser@fleet.com")
+            np_ = st.text_input("Password",         key="signup_password", placeholder="Min 6 characters", type="password")
+            cp  = st.text_input("Confirm Password", key="confirm_password", placeholder="••••••••", type="password")
+            st.write("") # Spacer
+            
+            if st.button("Create Account", key="signup_btn", type="primary", use_container_width=True):
                 if ne and np_ and cp:
-                    if np_ != cp:       st.error("❌ Passwords do not match")
-                    elif len(np_) < 6:  st.error("❌ Password must be ≥ 6 characters")
+                    if np_ != cp:       
+                        st.error("❌ Passwords do not match", icon="🚨")
+                    elif len(np_) < 6:  
+                        st.error("❌ Password must be at least 6 characters", icon="🚨")
                     else:
-                        with st.spinner("Creating account..."):
+                        with st.spinner("Provisioning account..."):
                             result = firebase_login(ne, np_, "signup")
                         if "idToken" in result:
                             st.session_state.update(user_email=result["email"],
-                                                    user_token=result["idToken"], logged_in=True)
+                                                    user_token=result["idToken"], 
+                                                    logged_in=True)
                             st.rerun()
                         else:
                             msg = result.get("error", {}).get("message", "Signup failed")
-                            st.error("❌ Email already registered." if "EMAIL_EXISTS" in msg else f"❌ {msg}")
+                            st.error("❌ Email already registered." if "EMAIL_EXISTS" in msg else f"❌ {msg}", icon="🚨")
                 else:
-                    st.warning("⚠️ Please fill all fields")
-    st.stop()
+                    st.warning("⚠️ Please fill all fields to create an account")
+                    
+    st.stop() # Prevents the rest of the app from running if not logged in
 
+# --- SESSION STATE MANAGEMENT ---
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
+
 if not st.session_state.logged_in:
     show_login()
 
