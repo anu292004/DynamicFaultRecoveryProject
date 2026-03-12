@@ -53,15 +53,15 @@ def show_login():
     # col_img for visual objects, col_spacer for breathing room, col_form for the login
     col_img, col_spacer, col_form = st.columns([1.2, 0.1, 1])
 
-    # --- LEFT COLUMN: VISUAL OBJECTS ---
+   # --- LEFT COLUMN: VISUAL OBJECTS ---
     with col_img:
         st.markdown("<div style='margin-top: 40px;'></div>", unsafe_allow_html=True)
         st.markdown('<p class="main-title">🤖 AGV Fleet Control</p>', unsafe_allow_html=True)
         st.markdown('<p class="sub-title">Intelligent warehouse automation at your fingertips.</p>', unsafe_allow_html=True)
         
-        # Object 1: A high-quality hero image (Using a placeholder tech/robotics image from Unsplash)
-        st.image("https://images.unsplash.com/photo-1581091226825-a6a2a5aee158?q=80&w=800&auto=format&fit=crop", 
-                 caption="Centralized Robotics Command", use_container_width=True)
+        # Object 1: High-quality AGV working video
+        # I've put an example YouTube video here, but you should use your own MP4 using Option B above!
+        st.video("https://www.youtube.com/watch?v=4W1EwIbDhyM")
         
         st.write("") # Spacer
         
